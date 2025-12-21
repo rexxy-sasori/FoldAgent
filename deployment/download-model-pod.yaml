@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: download-model-pod
+  namespace: liuyunxin
+spec:
+  containers:
+  - name: download-model
+    image: harbor.xa.xshixun.com:7443/hanfeigeng/vllm/vllm-openai:v0.10.2-linux-amd64
+    command: ["bash", "-c"]
+    args:
+    - |
+      set -e
+      
+      # Install huggingface_hub if not already installed
+      echo "Installing huggingface_hub..."
+      pip install -U huggingface_hub==0.36.0
+      
+      # Create cache directory if it doesn't exist
+      mkdir -p /root/.cache/huggingface
+      
+      # Download the model
+      echo "Downloading model ByteDance-Seed/Seed-OSS-36B-Instruct using HF mirror..."
+      huggingface-cli download --resume-download --local-dir-use-symlinks False ByteDance-Seed/Seed-OSS-36B-Instruct
+      
+      # Verify the download
+      echo "\nVerifying model download..."
+      MODEL_DIR="/root/.cache/huggingface/hub/models--ByteDance-Seed--Seed-OSS-36B-Instruct"
+      if [ -d "$MODEL_DIR" ]; then
+        echo "✅ Model directory exists: $MODEL_DIR"
+        echo "Number of files downloaded: $(find $MODEL_DIR -type f | wc -l)"
+        echo "\nListing model files:"
+        ls -la $MODEL_DIR
+      else
+        echo "❌ Model directory not found"
+        exit 1
+      fi
+      
+      # Keep the pod running for inspection
+      echo "\nModel download completed successfully!"
+      echo "Pod will sleep indefinitely for further inspection."
+      sleep infinity
+    volumeMounts:
+    - name: gpfshome
+      mountPath: /root
+    env:
+    - name: CUDA_VISIBLE_DEVICES
+      value: "0"
+    - name: http_proxy
+      value: "http://192.168.3.226:7890"
+    - name: https_proxy
+      value: "http://192.168.3.226:7890"
+    - name: HTTP_PROXY
+      value: "http://192.168.3.226:7890"
+    - name: HTTPS_PROXY
+      value: "http://192.168.3.226:7890"
+    - name: APT_PROXY
+      value: "http://192.168.3.241:3142"
+    - name: PIP_INDEX_URL
+      value: "http://192.168.12.70:9181/repository/pypi-proxy/simple/"
+    - name: PIP_TRUSTED_HOST
+      value: "192.168.12.70"
+    - name: HF_ENDPOINT
+      value: "https://hf-mirror.com"
+    resources:
+      limits:
+        memory: "16Gi"
+        cpu: "4"
+      requests:
+        memory: "8Gi"
+        cpu: "2"
+  volumes:
+  - name: gpfshome
+    persistentVolumeClaim:
+      claimName: pvc-gpfshome-liuyunxin

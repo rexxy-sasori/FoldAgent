@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-storage-pod
+  namespace: liuyunxin
+spec:
+  containers:
+  - name: test-storage
+    image: harbor.xa.xshixun.com:7443/llm-course/verl:vemlp-th2.4.0-cu124-vllm0.6.3-ray2.10-te1.7-v0.0.3
+    command: ["bash", "-c"]
+    args:
+    - |
+      # Check the persistent storage contents
+      echo "Checking persistent storage contents..."
+      echo "=== Listing /root/.cache/huggingface directory ==="
+      ls -la /root/.cache/huggingface
+      
+      # Check if model files exist
+      echo "\n=== Checking if model files exist ==="
+      if [ -d "/root/.cache/huggingface/hub/models--ByteDance-Seed--Seed-OSS-36B-Instruct" ]; then
+        echo "Model directory found!"
+        ls -la /root/.cache/huggingface/hub/models--ByteDance-Seed--Seed-OSS-36B-Instruct
+      else
+        echo "Model directory not found"
+      fi
+      
+      # Sleep indefinitely for further inspection
+      echo "\n=== Test completed - sleeping indefinitely ==="
+      sleep infinity
+    volumeMounts:
+    - name: gpfshome
+      mountPath: /root
+    resources:
+      limits:
+        memory: "8Gi"
+        cpu: "2"
+      requests:
+        memory: "4Gi"
+        cpu: "1"
+  volumes:
+  - name: gpfshome
+    persistentVolumeClaim:
+      claimName: pvc-gpfshome-liuyunxin

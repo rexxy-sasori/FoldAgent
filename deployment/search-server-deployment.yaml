@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: search-server
+  namespace: liuyunxin
+  labels:
+    app: search-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: search-server
+  template:
+    metadata:
+      labels:
+        app: search-server
+    spec:
+      containers:
+      - name: search-server
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/foldagent:v0.2
+        command: ["python3", "envs/search_server.py", "--host", "0.0.0.0", "--port", "8000", "--model", "Qwen/Qwen3-Embedding-8B", "--corpus", "Tevatron/browsecomp-plus-corpus", "--corpus-embedding-dataset", "miaolu3/browsecomp-plus"]
+        ports:
+        - containerPort: 8000
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+            memory: "32Gi"
+            cpu: "8"
+          requests:
+            memory: "16Gi"
+            cpu: "4"
+        env:
+        - name: NUM_GPUS
+          value: "1"
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        - name: http_proxy
+          value: "http://192.168.3.226:7890"
+        - name: https_proxy
+          value: "http://192.168.3.226:7890"
+        - name: HTTP_PROXY
+          value: "http://192.168.3.226:7890"
+        - name: HTTPS_PROXY
+          value: "http://192.168.3.226:7890"
+        - name: APT_PROXY
+          value: "http://192.168.3.241:3142"
+        - name: PIP_INDEX_URL
+          value: "http://192.168.12.70:9181/repository/pypi-proxy/simple/"
+        - name: PIP_TRUSTED_HOST
+          value: "192.168.12.70"
+        volumeMounts:
+        - name: cache-volume
+          mountPath: /root/.cache/huggingface
+      volumes:
+      - name: cache-volume
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: search-server
+  namespace: liuyunxin
+spec:
+  selector:
+    app: search-server
+  ports:
+  - port: 8000
+    targetPort: 8000
+  type: ClusterIP

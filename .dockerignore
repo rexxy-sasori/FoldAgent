@@ -1,0 +1,44 @@
+# Git related files
+.git
+.gitmodules
+.gitignore
+
+# Build and temporary directories
+__pycache__/
+*.pyc
+*.pyo
+.cache/
+
+# Test directories
+tests/
+external/verl/tests/
+
+# Documentation
+*.md
+*.rst
+README*
+docs/
+external/verl/docs/
+
+# Local configuration files
+.env
+*.env
+.dockerignore
+Dockerfile*
+
+# Results and output directories
+results/
+*.log
+
+# External dependencies (will be installed via pip)
+requirements*.txt
+external/verl/requirements*.txt
+
+# Miscellaneous
+examples/
+external/verl/examples/
+*.toml
+*.yaml
+*.yml
+!deployment/
+!.gitmodules

@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: local-llm
+  namespace: liuyunxin
+  labels:
+    app: local-llm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: local-llm
+  template:
+    metadata:
+      labels:
+        app: local-llm
+    spec:
+      containers:
+      - name: local-llm
+        image:  harbor.xa.xshixun.com:7443/hanfeigeng/vllm/vllm-openai:v0.10.2-linux-amd64
+        command: ["vllm", "serve"]
+        args:
+        - "ByteDance-Seed/Seed-OSS-36B-Instruct"
+        - "--port"
+        - "8001"
+        - "--max-model-len"
+        - "131072"
+        ports:
+        - containerPort: 8001
+        env:
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        - name: http_proxy
+          value: "http://192.168.3.226:7890"
+        - name: https_proxy
+          value: "http://192.168.3.226:7890"
+        - name: HTTP_PROXY
+          value: "http://192.168.3.226:7890"
+        - name: HTTPS_PROXY
+          value: "http://192.168.3.226:7890"
+        - name: APT_PROXY
+          value: "http://192.168.3.241:3142"
+        - name: PIP_INDEX_URL
+          value: "http://192.168.12.70:9181/repository/pypi-proxy/simple/"
+        - name: PIP_TRUSTED_HOST
+          value: "192.168.12.70"
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+            memory: 64Gi
+            cpu: "16"
+          requests:
+            nvidia.com/gpu: 1
+            memory: 64Gi
+            cpu: "16"
+        volumeMounts:
+        - name: huggingface-cache
+          mountPath: /root/.cache/huggingface
+      volumes:
+      - name: huggingface-cache
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: local-llm
+  namespace: liuyunxin
+spec:
+  selector:
+    app: local-llm
+  ports:
+  - port: 8001
+    targetPort: 8001
+  type: ClusterIP

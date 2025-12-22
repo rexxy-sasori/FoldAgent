@@ -3,6 +3,7 @@ import time
 import copy
 import uuid
 import logging
+import json
 from unittest.mock import patch
 from itertools import groupby
 import re, unicodedata
@@ -45,6 +46,9 @@ async def call_openai(messages, model='gpt-5-nano', max_retries=3, is_judge=Fals
 
     for attempt in range(max_retries):
         try:
+            logger.debug(f"[OPENAI API{' (JUDGE)' if is_judge else ''}] POST request to {openai_url}, model: {model}")
+            logger.debug(f"[OPENAI API{' (JUDGE)' if is_judge else ''}] Request messages: {json.dumps(messages[:1])}... (truncated)")
+            
             async with httpx.AsyncClient(timeout=300.0) as c:
                 headers = {}
                 if api_key:
@@ -54,12 +58,21 @@ async def call_openai(messages, model='gpt-5-nano', max_retries=3, is_judge=Fals
                     "model": model,
                     "messages": messages
                 }, headers=headers)
+                
+                logger.debug(f"[OPENAI API{' (JUDGE)' if is_judge else ''}] Response status: {r.status_code}, headers: {r.headers}")
                 r.raise_for_status()
-                return r.json()["content"]
+                
+                response_data = r.json()
+                logger.debug(f"[OPENAI API{' (JUDGE)' if is_judge else ''}] Full response: {json.dumps(response_data)}")
+                
+                content = response_data["content"]
+                logger.info(f"[OPENAI API{' (JUDGE)' if is_judge else ''}] Success - POST {openai_url} (attempt {attempt+1}/{max_retries}), model: {model}")
+                return content
         except Exception as e:
             if attempt == max_retries - 1:
-                logger.error(f"[CALL OPENAI{' (JUDGE)' if is_judge else ''}] Error after {max_retries} attempts: {str(e)}")
+                logger.error(f"[OPENAI API{' (JUDGE)' if is_judge else ''}] Error after {max_retries} attempts: {str(e)}")
                 return f"Error after {max_retries} attempts: {str(e)}"
+            logger.warning(f"[OPENAI API{' (JUDGE)' if is_judge else ''}] Attempt {attempt+1}/{max_retries} failed: {str(e)}")
             await asyncio.sleep(1 * (attempt + 1))
     return ""
 
@@ -247,6 +260,15 @@ class CallAPI:  # Call external API
             return None
         messages = kwargs.get('messages') or decode_conversation(input_ids, self.tokenizer)[0]
 
+        # Log request details
+        request_data = {
+            "model": self.model,
+            "messages": messages[:2],  # Log first 2 messages to avoid too much verbosity
+            "max_completion_tokens": max_tokens,
+            "request_id": f"callapi_{uuid.uuid4().hex[:8]}"
+        }
+        logger.debug(f"[CallAPI Request] URL: {self.client.base_url if hasattr(self.client, 'base_url') else 'https://api.openai.com/v1'}, Request: {json.dumps(request_data, ensure_ascii=False)}")
+
         for attempt in range(5):
             try:
                 response = await self.client.chat.completions.create(
@@ -254,6 +276,21 @@ class CallAPI:  # Call external API
                     messages=messages,
                     max_completion_tokens=max_tokens,
                 )
+
+                # Log response details
+                response_data = {
+                    "status": "success",
+                    "status_code": 200,  # AsyncOpenAI client handles HTTP status internally
+                    "model": self.model,
+                    "usage": {
+                        "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
+                        "completion_tokens": response.usage.completion_tokens if response.usage else 0,
+                        "total_tokens": response.usage.total_tokens if response.usage else 0,
+                    },
+                    "completion_length": len(response.choices[0].message.content or ""),
+                    "attempt": attempt + 1
+                }
+                logger.info(f"[CallAPI Response] {json.dumps(response_data)}")
 
                 text = response.choices[0].message.content or ""
                 text_ids = self.tokenizer.encode(text, add_special_tokens=False)
@@ -274,11 +311,18 @@ class CallAPI:  # Call external API
                     }]
                 }
             except Exception as e:
+                error_data = {
+                    "status": "error",
+                    "model": self.model,
+                    "attempt": attempt + 1,
+                    "error": str(e),
+                    "max_attempts": 5
+                }
                 if attempt == 4:
-                    logger.error(f"[CallAPI ERROR] Failed after 5 attempts: {e}")
+                    logger.error(f"[CallAPI Response] {json.dumps(error_data)}")
                     return None
                 wait_time = 2 ** attempt
-                logger.debug(f"[CallAPI] Attempt {attempt + 1} failed: {e}. Retrying in {wait_time}s...")
+                logger.warning(f"[CallAPI Retry] {json.dumps(error_data)}, retrying in {wait_time}s...")
                 await asyncio.sleep(wait_time)
         return None
 

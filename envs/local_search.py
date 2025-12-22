@@ -185,6 +185,9 @@ async def call_openai(messages, model='gpt-3.5-turbo', max_retries=3, is_judge=F
     
     for attempt in range(max_retries):
         try:
+            logger.debug(f"[OPENAI API{' (JUDGE)' if is_judge else ''}] POST request to {openai_url}, model: {model}")
+            logger.debug(f"[OPENAI API{' (JUDGE)' if is_judge else ''}] Request messages: {json.dumps(messages[:1])}... (truncated)")
+            
             async with httpx.AsyncClient(timeout=300.0) as c:
                 headers = {}
                 if api_key:
@@ -194,12 +197,21 @@ async def call_openai(messages, model='gpt-3.5-turbo', max_retries=3, is_judge=F
                     "model": model,
                     "messages": messages
                 }, headers=headers)
+                
+                logger.debug(f"[OPENAI API{' (JUDGE)' if is_judge else ''}] Response status: {r.status_code}, headers: {r.headers}")
                 r.raise_for_status()
-                return r.json()["choices"][0]["message"]["content"]
+                
+                response_data = r.json()
+                logger.debug(f"[OPENAI API{' (JUDGE)' if is_judge else ''}] Full response: {json.dumps(response_data)}")
+                
+                content = response_data["choices"][0]["message"]["content"]
+                logger.info(f"[OPENAI API{' (JUDGE)' if is_judge else ''}] Success - POST {openai_url} (attempt {attempt+1}/{max_retries}), model: {model}")
+                return content
         except Exception as e:
             if attempt == max_retries - 1:
-                logger.error(f"[CALL OPENAI{' (JUDGE)' if is_judge else ''}] Error after {max_retries} attempts: {str(e)}")
+                logger.error(f"[OPENAI API{' (JUDGE)' if is_judge else ''}] Error after {max_retries} attempts: {str(e)}")
                 return f"Error after {max_retries} attempts: {str(e)}"
+            logger.warning(f"[OPENAI API{' (JUDGE)' if is_judge else ''}] Attempt {attempt+1}/{max_retries} failed: {str(e)}")
             await asyncio.sleep(1 * (attempt + 1))
     return ""
 
@@ -220,12 +232,22 @@ async def call_openai_raw(messages, model='gpt-3.5-turbo', max_retries=3, is_jud
     
     for attempt in range(max_retries):
         try:
+            logger.debug(f"[OPENAI RAW API{' (JUDGE)' if is_judge else ''}] Request to {base_url}, model: {model}")
+            logger.debug(f"[OPENAI RAW API{' (JUDGE)' if is_judge else ''}] Request messages: {json.dumps(messages[:1])}... (truncated)")
+            
             resp = await client.chat.completions.create(model=model, messages=messages)
-            return resp.choices[0].message.content or ""
+            
+            logger.debug(f"[OPENAI RAW API{' (JUDGE)' if is_judge else ''}] Response status: {resp.status_code}")
+            logger.debug(f"[OPENAI RAW API{' (JUDGE)' if is_judge else ''}] Response usage: {resp.usage}")
+            
+            content = resp.choices[0].message.content or ""
+            logger.info(f"[OPENAI RAW API{' (JUDGE)' if is_judge else ''}] Success - {base_url} (attempt {attempt+1}/{max_retries}), model: {model}")
+            return content
         except Exception as e:
             if attempt == max_retries - 1:
-                logger.error(f"[OPENAI{' (JUDGE)' if is_judge else ''}] Error after {max_retries} attempts: {e}")
+                logger.error(f"[OPENAI RAW API{' (JUDGE)' if is_judge else ''}] Error after {max_retries} attempts: {e}")
                 return f"Error: {e}"
+            logger.warning(f"[OPENAI RAW API{' (JUDGE)' if is_judge else ''}] Attempt {attempt+1}/{max_retries} failed: {e}")
             await asyncio.sleep(1 * (attempt + 1))
     return ""
 
@@ -289,17 +311,25 @@ class AsyncSearchClient:
         await self._client.aclose()
 
     async def _post(self, path: str, payload: dict):
+        full_url = f"{self.base_url}{path}"
         last_exc = None
         for attempt in range(1, self.retries + 1):
             try:
+                logger.debug(f"[SEARCH API] POST request to {full_url}, payload: {json.dumps(payload)}")
                 r = await self._client.post(path, json=payload, timeout=self.timeout)
+                logger.debug(f"[SEARCH API] Response status: {r.status_code}, headers: {r.headers}")
                 r.raise_for_status()
                 data = r.json()
-                return data.get("results", data)  # convenience: unwrap "results" if present
+                logger.debug(f"[SEARCH API] Response data: {json.dumps(data)}")
+                result = data.get("results", data)  # convenience: unwrap "results" if present
+                logger.info(f"[SEARCH API] Success - POST {full_url} (attempt {attempt}/{self.retries})")
+                return result
             except httpx.HTTPError as e:
                 last_exc = e
                 if attempt == self.retries:
+                    logger.error(f"[SEARCH API] Failed - POST {full_url} after {self.retries} attempts: {str(e)}")
                     raise
+                logger.warning(f"[SEARCH API] Attempt {attempt}/{self.retries} failed for {full_url}: {str(e)}")
                 await asyncio.sleep(self.backoff * attempt)
         raise last_exc  # should not reach
 

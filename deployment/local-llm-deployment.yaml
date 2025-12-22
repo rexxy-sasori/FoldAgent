@@ -18,17 +18,17 @@ spec:
       containers:
       - name: local-llm
         image:  harbor.xa.xshixun.com:7443/hanfeigeng/vllm/vllm-openai:v0.10.2-linux-amd64
-        command: ["sleep", "infinity"]
-        # command: ["bash", "-c"]
-        # args:
-        # - |
-        #   # Download model using HF mirror
-        #   echo "Downloading model using HF mirror..."
-        #   HF_ENDPOINT=https://hf-mirror.com huggingface-cli download --resume-download --local-dir-use-symlinks False ByteDance-Seed/Seed-OSS-36B-Instruct
+        #command: ["sleep", "infinity"]
+        command: ["bash", "-c"]
+        args:
+        - |
+          # Download model using HF mirror
+          echo "Downloading model using HF mirror..."
+          HF_ENDPOINT=https://hf-mirror.com huggingface-cli download --resume-download --local-dir-use-symlinks False ByteDance-Seed/Seed-OSS-36B-Instruct
           
-        #   # Start vllm server
-        #   echo "Starting vllm server..."
-        #   vllm serve ByteDance-Seed/Seed-OSS-36B-Instruct --port 8001 --max-model-len 131072
+          # Start vllm server
+          echo "Starting vllm server..."
+          vllm serve ByteDance-Seed/Seed-OSS-36B-Instruct --port 8001 --max-model-len 131072
         ports:
         - containerPort: 8001
         env:

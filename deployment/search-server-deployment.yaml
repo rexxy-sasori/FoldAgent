@@ -17,8 +17,11 @@ spec:
     spec:
       containers:
       - name: search-server
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/foldagent:v0.2
-        command: ["python3", "envs/search_server.py", "--host", "0.0.0.0", "--port", "8000", "--model", "Qwen/Qwen3-Embedding-8B", "--corpus", "Tevatron/browsecomp-plus-corpus", "--corpus-embedding-dataset", "miaolu3/browsecomp-plus"]
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/foldagent:v0.6
+        # command: ["sleep", "infinity"]
+        command: ["bash", "-c"]
+        args:
+        - python3 envs/search_server.py --host 0.0.0.0 --port 8000 --model Qwen/Qwen3-Embedding-8B --corpus Tevatron/browsecomp-plus-corpus --corpus-embedding-dataset miaolu3/browsecomp-plus
         ports:
         - containerPort: 8000
         resources:
@@ -49,11 +52,12 @@ spec:
         - name: PIP_TRUSTED_HOST
           value: "192.168.12.70"
         volumeMounts:
-        - name: cache-volume
-          mountPath: /root/.cache/huggingface
+        - name: gpfshome
+          mountPath: /root
       volumes:
-      - name: cache-volume
-        emptyDir: {}
+      - name: gpfshome
+        persistentVolumeClaim:
+          claimName: pvc-gpfshome-liuyunxin
 ---
 apiVersion: v1
 kind: Service

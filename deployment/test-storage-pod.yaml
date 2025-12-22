@@ -6,7 +6,7 @@ metadata:
 spec:
   containers:
   - name: test-storage
-    image: harbor.xa.xshixun.com:7443/llm-course/verl:vemlp-th2.4.0-cu124-vllm0.6.3-ray2.10-te1.7-v0.0.3
+    image: harbor.xa.xshixun.com:7443/hanfeigeng/vllm/vllm-openai:v0.10.2-linux-amd64
     command: ["bash", "-c"]
     args:
     - |
@@ -15,13 +15,125 @@ spec:
       echo "=== Listing /root/.cache/huggingface directory ==="
       ls -la /root/.cache/huggingface
       
-      # Check if model files exist
-      echo "\n=== Checking if model files exist ==="
-      if [ -d "/root/.cache/huggingface/hub/models--ByteDance-Seed--Seed-OSS-36B-Instruct" ]; then
-        echo "Model directory found!"
-        ls -la /root/.cache/huggingface/hub/models--ByteDance-Seed--Seed-OSS-36B-Instruct
+      # List all model directories in the hub folder
+      echo "\n=== Listing all model directories in /root/.cache/huggingface/hub ==="
+      model_dirs=(/root/.cache/huggingface/hub/models--*)
+      if [ ${#model_dirs[@]} -eq 0 ]; then
+        echo "No model directories found"
       else
-        echo "Model directory not found"
+        echo "Found ${#model_dirs[@]} model directories:"
+        for dir in "${model_dirs[@]}"; do
+          if [ -d "$dir" ]; then
+            model_name=$(basename "$dir")
+            echo "\n- Checking $model_name..."
+            
+            # Check for snapshots directory - Hugging Face stores actual model files there
+            snapshot_dirs=("$dir/snapshots"/*)
+            if [ ${#snapshot_dirs[@]} -gt 0 ] && [ -d "${snapshot_dirs[0]}" ]; then
+              # Use the first snapshot directory (typically the only one)
+              snapshot_dir="${snapshot_dirs[0]}"
+              snapshot_name=$(basename "$snapshot_dir")
+              echo "  Using snapshot: $snapshot_name"
+              
+              # Check for essential files that indicate a complete model
+              config_exists="✗"
+              tokenizer_exists="✗"
+              weights_exists="✗"
+              
+              if [ -f "$snapshot_dir/config.json" ]; then
+                config_exists="✓"
+              fi
+              
+              if [ -f "$snapshot_dir/tokenizer.json" ] || [ -f "$snapshot_dir/tokenizer_config.json" ]; then
+                tokenizer_exists="✓"
+              fi
+              
+              if [ -f "$snapshot_dir/model.safetensors" ] || [ -f "$snapshot_dir/pytorch_model.bin" ]; then
+                weights_exists="✓"
+              fi
+              
+              # Check if there are sharded model files
+              if [ $weights_exists = "✗" ]; then
+                # Check for sharded pytorch files
+                if [ $(ls -1 "$snapshot_dir"/pytorch_model-*.bin 2>/dev/null | wc -l) -gt 0 ]; then
+                  weights_exists="✓"
+                fi
+                # Check for sharded safetensors files
+                if [ $(ls -1 "$snapshot_dir"/model-*.safetensors 2>/dev/null | wc -l) -gt 0 ]; then
+                  weights_exists="✓"
+                fi
+              fi
+              
+              # Check for incomplete download indicators
+              partial_download="✗"
+              if [ -f "$snapshot_dir/model.safetensors.part" ] || [ -f "$snapshot_dir/pytorch_model.bin.part" ]; then
+                partial_download="✓"
+              fi
+              
+              if [ $(ls -1 "$snapshot_dir"/*.safetensors.part 2>/dev/null | wc -l) -gt 0 ]; then
+                partial_download="✓"
+              fi
+              
+              if [ $(ls -1 "$snapshot_dir"/*.bin.part 2>/dev/null | wc -l) -gt 0 ]; then
+                partial_download="✓"
+              fi
+              
+              # Check if sharded files match expected count from index
+              shard_mismatch="✗"
+              if [ -f "$snapshot_dir/pytorch_model.bin.index.json" ]; then
+                expected_shards=$(grep -c "pytorch_model-" "$snapshot_dir/pytorch_model.bin.index.json" 2>/dev/null)
+                actual_shards=$(ls -1 "$snapshot_dir"/pytorch_model-*.bin 2>/dev/null | wc -l)
+                if [ "$expected_shards" -gt 0 ] && [ "$actual_shards" -lt "$expected_shards" ]; then
+                  shard_mismatch="✓"
+                fi
+              fi
+              
+              if [ -f "$snapshot_dir/model.safetensors.index.json" ]; then
+                expected_shards=$(grep -c "model-" "$snapshot_dir/model.safetensors.index.json" 2>/dev/null)
+                actual_shards=$(ls -1 "$snapshot_dir"/model-*.safetensors 2>/dev/null | wc -l)
+                if [ "$expected_shards" -gt 0 ] && [ "$actual_shards" -lt "$expected_shards" ]; then
+                  shard_mismatch="✓"
+                fi
+              fi
+            else
+              # No snapshots directory found
+              echo "  WARNING: No snapshots directory found"
+              config_exists="✗"
+              tokenizer_exists="✗"
+              weights_exists="✗"
+              partial_download="✗"
+              shard_mismatch="✗"
+            fi
+            
+            # Determine completeness status
+            if [ $config_exists = "✓" ] && [ $tokenizer_exists = "✓" ] && [ $weights_exists = "✓" ] && [ $partial_download = "✗" ] && [ $shard_mismatch = "✗" ]; then
+              echo "  Status: COMPLETE"
+            else
+              echo "  Status: INCOMPLETE"
+            fi
+            
+            # Show essential file status
+            echo "  Essential files:"
+            echo "    - config.json: $config_exists"
+            echo "    - tokenizer files: $tokenizer_exists"
+            echo "    - model weights: $weights_exists"
+            
+            # Show download status checks
+            echo "  Download status:"
+            echo "    - Partial downloads (.part files): $partial_download"
+            echo "    - Shard count mismatch: $shard_mismatch"
+            
+            # Show first 10 files in the snapshot directory
+            if [ -n "$snapshot_dir" ] && [ -d "$snapshot_dir" ]; then
+              echo "  First 10 files in snapshot:"
+              ls -la "$snapshot_dir" | head -10
+            else
+              echo "  First 10 files in model directory:"
+              ls -la "$dir" | head -10
+            fi
+            echo "  ..."
+          fi
+        done
       fi
       
       # Sleep indefinitely for further inspection

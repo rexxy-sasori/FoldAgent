@@ -8,7 +8,7 @@ spec:
     spec:
       containers:
       - name: foldagent-eval
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/foldagent:v0.8
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:v0.21
         command: ["python3", "scripts/eval_bc.py", "--workflow", "search_branch", "--model_name", "ByteDance-Seed/Seed-OSS-36B-Instruct", "--local_search_url", "http://search-server.liuyunxin.svc.cluster.local:8000", "--data_path", "/app/data/bc_test.parquet", "--output_dir", "/root/results", "--num_workers", "32", "--prompt_length", "16384", "--response_length", "32768", "--max_turn", "200", "--val_max_turn", "200", "--max_session", "10", "--val_max_session", "10"]
         resources:
           limits:

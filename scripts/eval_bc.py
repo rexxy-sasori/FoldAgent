@@ -78,7 +78,7 @@ async def eval_one(row, config, tokenizer, model_name):
 
 
 async def worker(worker_id, rows, args, pbar, shared_scores):
-    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct", trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
 
     config = OmegaConf.create({
         'actor_rollout_ref': {'rollout': {

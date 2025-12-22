@@ -54,7 +54,6 @@ async def process_item(
         context: TaskContext,
         LLMClass=CallLLM,
 ) -> DataProto:
-    os.environ["no_proxy"] = ""
     tokenizer = context.tokenizer
     config = context.config.actor_rollout_ref.rollout
     is_train = context.is_train

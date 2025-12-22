@@ -86,6 +86,8 @@ def generate_download_model_yaml(model_path, output_file=None):
                         {"name": "https_proxy", "value": "http://192.168.3.226:7890"},
                         {"name": "HTTP_PROXY", "value": "http://192.168.3.226:7890"},
                         {"name": "HTTPS_PROXY", "value": "http://192.168.3.226:7890"},
+                        {"name": "NO_PROXY", "value": "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"},
+                        {"name": "no_proxy", "value": "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"},
                         {"name": "APT_PROXY", "value": "http://192.168.3.241:3142"},
                         {"name": "PIP_INDEX_URL", "value": "http://192.168.12.70:9181/repository/pypi-proxy/simple/"},
                         {"name": "PIP_TRUSTED_HOST", "value": "192.168.12.70"},

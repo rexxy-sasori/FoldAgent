@@ -260,7 +260,9 @@ async def judge(question, correct_answer, predicted_answer, model=None):
             grade_report = parse_judge_response(response)
             score = int(grade_report.get('correct', 0))
 
-    logger.info(f"[Judged] score={score}\nLabel: {correct_answer}\nModel: {predicted_answer.split('\n')[0]}")
+    # Get the first line of predicted_answer
+    first_line_predicted = predicted_answer.split('\n')[0]
+    logger.info(f"[Judged] score={score}\nLabel: {correct_answer}\nModel: {first_line_predicted}")
     return score
 
 

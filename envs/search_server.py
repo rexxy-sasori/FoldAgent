@@ -129,7 +129,7 @@ def keep_first_n_words(text: str, n: int = 1000) -> str:
 
 def load_corpus():
     """Load the corpus dataset from HuggingFace"""
-    print(f"Loading corpus dataset from {CORPUS_DATASET}...")
+    logger.info(f"Loading corpus dataset from {CORPUS_DATASET}...")
     ds = load_dataset(CORPUS_DATASET, split='train')
     docid_to_text = {row["docid"]: {
         'raw': keep_first_n_words(row["text"], 15000),
@@ -138,7 +138,7 @@ def load_corpus():
         'docid': row['docid']
     } for row in ds}
     url_to_docid = {row["url"]: row['docid'] for row in ds}
-    print(f"Loaded {len(docid_to_text)} documents")
+    logger.info(f"Loaded {len(docid_to_text)} documents")
     return docid_to_text, url_to_docid
 
 
@@ -146,13 +146,13 @@ def encode_corpus():
     """Load corpus embeddings from HuggingFace dataset"""
     from huggingface_hub import hf_hub_download
 
-    print(f"Downloading corpus embeddings from {CORPUS_EMBEDDING_DATASET}...")
+    logger.info(f"Downloading corpus embeddings from {CORPUS_EMBEDDING_DATASET}...")
     embeddings_path = hf_hub_download(
         repo_id=CORPUS_EMBEDDING_DATASET,
         filename=CORPUS_EMBEDDING_FILE,
         repo_type="dataset"
     )
-    print(f"Loading corpus embeddings from {embeddings_path}...")
+    logger.info(f"Loading corpus embeddings from {embeddings_path}...")
     with open(embeddings_path, 'rb') as f:
         return pickle.load(f)
 
@@ -225,7 +225,7 @@ def optimized_worker(gpu_id: int, batch_queue: mp.Queue, result_queue: mp.Queue,
         corpus_docids = corpus_data['docids']
         task_description = 'Given a web search query, retrieve relevant passages that answer the query'
 
-        print(f"Worker {gpu_id}: Ready")
+        logger.info(f"Worker {gpu_id}: Ready")
 
         while True:
             try:
@@ -243,10 +243,10 @@ def optimized_worker(gpu_id: int, batch_queue: mp.Queue, result_queue: mp.Queue,
                 continue
             except Exception as e:
                 # Log critical errors only
-                print(f"Worker {gpu_id} error: {e}")
+                logger.error(f"Worker {gpu_id} error: {e}")
 
     except Exception as e:
-        print(f"Worker {gpu_id} init error: {e}")
+        logger.error(f"Worker {gpu_id} init error: {e}")
 
 
 def fast_process_batch(batch: SearchBatch, tokenizer, model, device,
@@ -322,7 +322,7 @@ class HighThroughputSearchServer:
             worker.start()
             self.workers.append(worker)
 
-        print(f"🚀 Started {num_gpus} workers with max_batch_size={max_batch_size}")
+        logger.info(f"🚀 Started {num_gpus} workers with max_batch_size={max_batch_size}")
 
         # Fast result collector
         self.result_thread = threading.Thread(target=self._fast_collect_results, daemon=True)
@@ -355,7 +355,7 @@ class HighThroughputSearchServer:
                 time.sleep(10.0)
                 req_count, avg_time, max_time = self.metrics.get_stats_and_reset()
                 if req_count > 0:
-                    print(f"📊 10s: {req_count} req | {avg_time:.1f}ms avg | {max_time:.1f}ms max | "
+                    logger.info(f"📊 10s: {req_count} req | {avg_time:.1f}ms avg | {max_time:.1f}ms max | "
                           f"Queues: {self.request_queue.qsize()}/{self.batch_queue.qsize()}/{self.result_queue.qsize()}")
             except Exception:
                 continue
@@ -396,7 +396,7 @@ class HighThroughputSearchServer:
 
     def shutdown(self):
         """Clean shutdown"""
-        print("Shutting down...")
+        logger.info("Shutting down...")
 
         # Stop batcher
         self.request_queue.put(None)
@@ -431,7 +431,7 @@ async def startup_event():
     max_batch_size = int(os.getenv("MAX_BATCH_SIZE", "2048"))  # Larger default
     batch_timeout = float(os.getenv("BATCH_TIMEOUT", "0.005"))  # 5ms default
 
-    print(f"🚀 Starting search server: {num_gpus} GPUs, batch={max_batch_size}, timeout={batch_timeout}s")
+    logger.info(f"🚀 Starting search server: {num_gpus} GPUs, batch={max_batch_size}, timeout={batch_timeout}s")
 
     search_server = HighThroughputSearchServer(
         num_gpus=num_gpus, max_batch_size=max_batch_size, batch_timeout=batch_timeout)

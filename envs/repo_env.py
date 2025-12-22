@@ -2,6 +2,7 @@ import asyncio
 import collections
 import copy
 import json
+import logging
 import os
 import re
 import time
@@ -11,6 +12,8 @@ from typing import *
 import numpy as np
 import requests
 import torch
+
+logger = logging.getLogger(__name__)
 
 
 ENV_PREFIX_MAP = {}
@@ -56,15 +59,15 @@ class GymEnv:
             if self.gym.ping():
                 break
             if cc == 60:  # Only log if taking too long
-                print(f"WARNING: Server initialization taking longer than expected ({cc}s)")
+                logger.warning(f"Server initialization taking longer than expected ({cc}s)")
             if cc == 300:  # Only log if taking too long
-                print(f"WARNING: Server initialization taking longer than expected ({cc}s)")
+                logger.warning(f"Server initialization taking longer than expected ({cc}s)")
             if cc >= 60 * 10:
-                print(f"ERROR: Server initialization timeout after ({cc}s)")
+                logger.error(f"Server initialization timeout after ({cc}s)")
                 break
             await asyncio.sleep(1)
         self.stats['env_init_time'] = int(time.time() - start_env)
-        print('ENV START COST', time.time() - start_env)
+        logger.debug('ENV START COST %f', time.time() - start_env)
 
     async def get_data(self, item, context):
         if 'prompt' in item.non_tensor_batch['extra_info'][0]:
@@ -293,7 +296,7 @@ class FileLocEnv:
             return content == 'pong' or 'pong' in content.lower()
         except Exception as e:
             self._try_next_port()
-            print(f"Ping failed: {e}")
+            logger.error(f"Ping failed: {e}")
             return False
 
     def _try_next_port(self):
@@ -315,7 +318,7 @@ class FileLocEnv:
                 self.client.base_url = new_url
 
                 if self.ping():
-                    print(f"Switched to port {port}")
+                    logger.info(f"Switched to port {port}")
                     self.service_url = new_url
                     self.client.timeout = old_timeout
                     return True
@@ -368,7 +371,7 @@ class FileLocEnv:
                 self.client.timeout = original_timeout
 
                 error_msg = str(e)
-                print(f"Service call attempt {attempt + 1}/{max_retries} failed: {error_msg}")
+                logger.warning(f"Service call attempt {attempt + 1}/{max_retries} failed: {error_msg}")
 
                 # If this is the last attempt, return error message
                 if attempt == max_retries - 1:
@@ -1067,7 +1070,7 @@ class RepairEnv:
 
             return content == 'pong' or 'pong' in content.lower()
         except Exception as e:
-            print(f"Ping failed: {e}")
+            logger.error(f"Ping failed: {e}")
             return False
 
     def _call_service(self, provider: str, action_id: str, data: dict) -> str:
@@ -1099,7 +1102,7 @@ class RepairEnv:
                 self.client.timeout = original_timeout
 
                 error_msg = str(e)
-                print(f"Service call attempt {attempt + 1}/{max_retries} failed: {error_msg}")
+                logger.warning(f"Service call attempt {attempt + 1}/{max_retries} failed: {error_msg}")
 
                 if attempt == max_retries - 1:
                     if "connection" in error_msg.lower() or "timeout" in error_msg.lower():
@@ -1226,7 +1229,7 @@ class RepairEnv:
         except UnidiffParseError:
             return {}
         except Exception as e:
-            print(f"Unexpected unidiff parsing error: {str(e)}")
+            logger.error(f"Unexpected unidiff parsing error: {str(e)}")
             return {}
 
         result = dict[str, str]()

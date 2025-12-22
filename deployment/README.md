@@ -135,6 +135,7 @@ kubectl delete pvc foldagent-results-pvc -n liuyunxin
 - `CUDA_VISIBLE_DEVICES`: GPU devices to use (default: 0)
 - `OPENAI_API_KEY`: API key for OpenAI (dummy value for local LLM)
 - `OPENAI_BASE_URL`: Base URL for OpenAI API (local LLM URL)
+- `OPENAI_URL`: Full URL for OpenAI chat completions endpoint (e.g., `http://local-llm.liuyunxin:8001/v1/chat/completions`)
 
 ### Resource Requirements
 

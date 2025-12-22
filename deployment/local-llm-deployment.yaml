@@ -50,6 +50,10 @@ spec:
           value: "192.168.12.70"
         - name: HF_ENDPOINT
           value: "https://hf-mirror.com"
+        - name: NO_PROXY
+          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+        - name: no_proxy
+          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
         resources:
           limits:
             nvidia.com/gpu: 1

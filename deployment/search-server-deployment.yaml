@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
       - name: search-server
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/foldagent:v0.6
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/foldagent:v0.7
         # command: ["sleep", "infinity"]
         command: ["bash", "-c"]
         args:
@@ -37,6 +37,8 @@ spec:
           value: "1"
         - name: CUDA_VISIBLE_DEVICES
           value: "0"
+        - name: HF_ENDPOINT
+          value: "https://hf-mirror.com"
         - name: http_proxy
           value: "http://192.168.3.226:7890"
         - name: https_proxy
@@ -45,6 +47,10 @@ spec:
           value: "http://192.168.3.226:7890"
         - name: HTTPS_PROXY
           value: "http://192.168.3.226:7890"
+        - name: NO_PROXY
+          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+        - name: no_proxy
+          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
         - name: APT_PROXY
           value: "http://192.168.3.241:3142"
         - name: PIP_INDEX_URL

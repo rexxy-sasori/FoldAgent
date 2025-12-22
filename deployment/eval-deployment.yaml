@@ -8,8 +8,8 @@ spec:
     spec:
       containers:
       - name: foldagent-eval
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/foldagent:v0.2
-        command: ["python3", "scripts/eval_bc.py", "--workflow", "search_branch", "--model_name", "ByteDance-Seed/Seed-OSS-36B-Instruct", "--local_search_url", "http://search-server.liuyunxin:8000", "--data_path", "/app/data/bc_test.parquet", "--output_dir", "/root/results", "--num_workers", "32", "--prompt_length", "16384", "--response_length", "32768", "--max_turn", "200", "--val_max_turn", "200", "--max_session", "10", "--val_max_session", "10"]
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/foldagent:v0.8
+        command: ["python3", "scripts/eval_bc.py", "--workflow", "search_branch", "--model_name", "ByteDance-Seed/Seed-OSS-36B-Instruct", "--local_search_url", "http://search-server.liuyunxin.svc.cluster.local:8000", "--data_path", "/app/data/bc_test.parquet", "--output_dir", "/root/results", "--num_workers", "32", "--prompt_length", "16384", "--response_length", "32768", "--max_turn", "200", "--val_max_turn", "200", "--max_session", "10", "--val_max_session", "10"]
         resources:
           limits:
             nvidia.com/gpu: 1
@@ -23,8 +23,16 @@ spec:
           value: "dummy"
         - name: OPENAI_BASE_URL
           value: "http://local-llm.liuyunxin:8001/v1"
+        - name: OPENAI_URL
+          value: "http://local-llm.liuyunxin:8001/v1/chat/completions"
         - name: CUDA_VISIBLE_DEVICES
           value: "0"
+        - name: e
+          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+        - name: no_proxy
+          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+        - name: HF_ENDPOINT
+          value: "https://hf-mirror.com"
         - name: http_proxy
           value: "http://192.168.3.226:7890"
         - name: https_proxy
@@ -40,9 +48,10 @@ spec:
         - name: PIP_TRUSTED_HOST
           value: "192.168.12.70"
         volumeMounts:
-        - name: cache-volume
-          mountPath: /root/.cache/huggingface
+        - name: gpfshome
+          mountPath: /root
       volumes:
-      - name: cache-volume
-        emptyDir: {}
+      - name: gpfshome
+        persistentVolumeClaim:
+          claimName: pvc-gpfshome-liuyunxin
       restartPolicy: OnFailure

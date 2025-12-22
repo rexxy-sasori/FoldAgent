@@ -1,5 +1,5 @@
 # Use specified base image from harbor registry
-FROM harbor.xa.xshixun.com:7443/llm-course/verl:vemlp-th2.4.0-cu124-vllm0.6.3-ray2.10-te1.7-v0.0.3
+FROM harbor.xa.xshixun.com:7443/hanfeigeng/vllm/vllm-openai:v0.10.2-linux-amd64
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
@@ -14,14 +14,14 @@ COPY external/verl/ ./external/verl/
 RUN pip3 install ./external/verl
 
 # Install additional Python dependencies
-RUN pip3 install fastapi uvicorn transformers numpy pandas tqdm omegaconf huggingface_hub
+RUN pip3 install fastapi uvicorn transformers numpy pandas tqdm omegaconf torch huggingface_hub==0.36.0
 
 # Clean up unnecessary files after installation
-RUN rm -rf /app/external/verl \
-    && pip3 cache purge \
-    && rm -rf /root/.cache/pip \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+# RUN rm -rf /app/external/verl \
+#     && pip3 cache purge \
+#     && rm -rf /root/.cache/pip \
+#     && apt-get clean \
+#     && rm -rf /var/lib/apt/lists/*
 
 # Copy only the necessary application code
 COPY envs/ ./envs/

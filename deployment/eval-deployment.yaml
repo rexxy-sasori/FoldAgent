@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: foldagent-eval
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:v0.24
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:v0.26
         # command: ["sleep", "infinity"]
         # Uncomment below to run evaluation automatically
         command: ["bash", "-c"]
@@ -24,7 +24,7 @@ spec:
             python3 scripts/eval_bc.py
             --workflow search_branch
             --model_name ByteDance-Seed/Seed-OSS-36B-Instruct
-            --local_search_url http://search-server.liuyunxin.svc.cluster.local:8000
+            --local_search_url http://search-server.liuyunxin:8000
             --data_path /app/data/bc_test.parquet
             --output_dir /root/results
             --num_workers 32
@@ -34,6 +34,7 @@ spec:
             --val_max_turn 200
             --max_session 10
             --val_max_session 10
+            && sleep infinity
         resources:
           limits:
             nvidia.com/gpu: 1
@@ -44,19 +45,25 @@ spec:
             cpu: "32"
         env:
         - name: OPENAI_API_KEY
-          value: "dummy"
+          valueFrom:
+            secretKeyRef:
+              name: foldagent-eval-secrets
+              key: openai-api-key
         - name: OPENAI_BASE_URL
           value: "http://local-llm.liuyunxin:8001/v1"
         - name: OPENAI_URL
           value: "http://local-llm.liuyunxin:8001/v1/chat/completions"
         - name: JUDGE_OPENAI_API_KEY
-          value: "sk-3bAfYybli7IW4Nmwl7KQiyxFTgnsDs0yJzwbTnMHD5EDTObj"
+          valueFrom:
+            secretKeyRef:
+              name: foldagent-eval-secrets
+              key: openai-api-key
         - name: JUDGE_OPENAI_BASE_URL
-          value: "https://api.moonshot.cn/v1"
+          value: "http://local-llm.liuyunxin:8001/v1"
         - name: JUDGE_OPENAI_URL
-          value: "https://api.moonshot.cn/v1/chat/completions"
+          value: "http://local-llm.liuyunxin:8001/v1/chat/completions"
         - name: JUDGE_OPENAI_MODEL
-          value: "moonshot-v1-128k"
+          value: "ByteDance-Seed/Seed-OSS-36B-Instruct"
         - name: CUDA_VISIBLE_DEVICES
           value: "0"
         - name: NO_PROXY

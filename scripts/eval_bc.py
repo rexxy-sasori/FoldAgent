@@ -13,13 +13,19 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Set up logging
+# Set up run-specific output directory
+run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+run_id = f"run_{run_timestamp}"
+run_dir = Path('/root') / run_timestamp
+run_dir.mkdir(parents=True, exist_ok=True)
+log_filename = run_dir / f'eval_bc.log'
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format=f'%(asctime)s - {run_id} - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler('eval_bc.log')
+        logging.FileHandler(str(log_filename))
     ]
 )
 logger = logging.getLogger('eval_bc')
@@ -151,7 +157,8 @@ async def worker(worker_id, rows, args, pbar, shared_scores):
 
 
 def main():
-    logger.info("Starting BrowseComp-Plus evaluation script")
+    logger.info(f"Starting BrowseComp-Plus evaluation script - {run_id}")
+    logger.info(f"Logging to file: {log_filename}")
     
     args = parse_args()
     logger.info(f"Parsed arguments: {args}")
@@ -163,7 +170,6 @@ def main():
     logger.info(f"Loading data from {args.data_path}")
     df = pd.read_parquet(args.data_path)
     logger.info(f"Successfully loaded {len(df)} items")
-    print(f"Loaded {len(df)} items")
 
     # Split for workers
     logger.info(f"Splitting data into {args.num_workers} chunks")
@@ -194,9 +200,8 @@ def main():
     avg_score = np.mean([r['score'] for r in results])
     success_count = sum(r['status']=='success' for r in results)
     logger.info(f"{'='*60}")
+    logger.info(f"{'='*60}")
     logger.info(f"Overall - Avg Score: {avg_score:.4f}, Success: {success_count}/{len(results)}")
-    print(f"\n{'='*60}")
-    print(f"Overall - Avg Score: {avg_score:.4f}, Success: {success_count}/{len(results)}")
 
     # Summary by data_source
     from collections import defaultdict
@@ -205,28 +210,48 @@ def main():
         by_source[r['data_source']].append(r['score'])
 
     logger.info(f"\nBy Data Source:")
-    print(f"\nBy Data Source:")
     for source in sorted(by_source.keys()):
         scores = by_source[source]
         source_avg = np.mean(scores)
         source_count = len(scores)
         logger.info(f"  {source}: {source_avg:.4f} ({source_count} items)")
-        print(f"  {source}: {source_avg:.4f} ({source_count} items)")
 
     # Save
-    logger.info(f"\nSaving results...")
+    logger.info(f"Saving results...")
+    
+    # Create output directory if it doesn't exist
     Path(args.output_dir).mkdir(exist_ok=True)
-    output_file = Path(args.output_dir) / f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    
+    # Save results in both the run directory and the specified output directory
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    results_filename = f"results_{run_id}_{timestamp}.json"
+    
+    # Save in run-specific directory
+    run_results_file = run_dir / results_filename
+    logger.info(f"Dumping results to run directory: {run_results_file}")
+    
+    # Save in specified output directory
+    output_file = Path(args.output_dir) / results_filename
+    logger.info(f"Dumping results to output directory: {output_file}")
+    
     logger.info(f"Creating summary statistics")
     summary_by_source = {src: {'avg_score': float(np.mean(scores)), 'count': len(scores)}
                          for src, scores in by_source.items()}
     
-    logger.info(f"Dumping results to JSON file: {output_file}")
-    json.dump({'avg_score': avg_score, 'by_source': summary_by_source, 'results': results},
-              open(output_file, 'w'), indent=2)
+    results_data = {
+        'run_id': run_id,
+        'log_file': str(log_filename),
+        'run_dir': str(run_dir),
+        'avg_score': avg_score,
+        'by_source': summary_by_source,
+        'results': results
+    }
+    
+    # Write to both locations
+    json.dump(results_data, open(run_results_file, 'w'), indent=2)
+    json.dump(results_data, open(output_file, 'w'), indent=2)
     
     logger.info(f"Results saved successfully to {output_file}")
-    print(f"\nSaved to {output_file}")
 
 
 if __name__ == "__main__":

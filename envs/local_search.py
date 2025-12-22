@@ -174,42 +174,63 @@ def relaxed_em(label: str, pred: str) -> bool:
     return False
 
 
-async def call_openai(messages, model='gpt-5-nano', max_retries=3):
-    openai_url = os.getenv("OPENAI_URL")
+async def call_openai(messages, model='gpt-3.5-turbo', max_retries=3, is_judge=False):
+    if is_judge:
+        openai_url = os.getenv("JUDGE_OPENAI_URL", os.getenv("JUDGE_OPENAI_BASE_URL") + "/chat/completions" if os.getenv("JUDGE_OPENAI_BASE_URL") else os.getenv("OPENAI_BASE_URL") + "/chat/completions")
+        api_key = os.getenv("JUDGE_OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
+    else:
+        openai_url = os.getenv("OPENAI_URL", os.getenv("OPENAI_BASE_URL") + "/chat/completions" if os.getenv("OPENAI_BASE_URL") else "")
+        api_key = os.getenv("OPENAI_API_KEY")
+    
     for attempt in range(max_retries):
         try:
             async with httpx.AsyncClient(timeout=300.0) as c:
+                headers = {}
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                    
                 r = await c.post(openai_url, json={
                     "model": model,
                     "messages": messages
-                })
+                }, headers=headers)
                 r.raise_for_status()
-                return r.json()["content"]
+                return r.json()["choices"][0]["message"]["content"]
         except Exception as e:
             if attempt == max_retries - 1:
-                print(f"[CALL OPENAI] Error after {max_retries} attempts: {str(e)}")
+                print(f"[CALL OPENAI{' (JUDGE)' if is_judge else ''}] Error after {max_retries} attempts: {str(e)}")
                 return f"Error after {max_retries} attempts: {str(e)}"
             await asyncio.sleep(1 * (attempt + 1))
     return ""
 
 
-async def call_openai_raw(messages, model='gpt-4o-mini', max_retries=3):
+async def call_openai_raw(messages, model='gpt-3.5-turbo', max_retries=3, is_judge=False):
     from openai import AsyncOpenAI
     if isinstance(messages, str):
         messages = [{'role': 'user', 'content': messages}]
-    client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    
+    if is_judge:
+        api_key = os.getenv("JUDGE_OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
+        base_url = os.getenv("JUDGE_OPENAI_BASE_URL", os.getenv("OPENAI_BASE_URL"))
+    else:
+        api_key = os.getenv("OPENAI_API_KEY")
+        base_url = os.getenv("OPENAI_BASE_URL")
+    
+    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+    
     for attempt in range(max_retries):
         try:
             resp = await client.chat.completions.create(model=model, messages=messages)
             return resp.choices[0].message.content or ""
         except Exception as e:
             if attempt == max_retries - 1:
-                print(f"[OPENAI] Error after {max_retries} attempts: {e}")
+                print(f"[OPENAI{' (JUDGE)' if is_judge else ''}] Error after {max_retries} attempts: {e}")
                 return f"Error: {e}"
             await asyncio.sleep(1 * (attempt + 1))
     return ""
 
-async def judge(question, correct_answer, predicted_answer):
+async def judge(question, correct_answer, predicted_answer, model=None):
+    if model is None:
+        model = os.getenv("JUDGE_OPENAI_MODEL", "gpt-3.5-turbo")
     # Patch browsecomp typo
     correct_answer = "ttellomS saiboT"[::-1] if "tellomS saiboT"[::-1] in correct_answer else correct_answer  # fix
     correct_answer = "yayhdapottahC najnarawsiB"[::-1] if "yayhdapattahC najnarawsiB"[::-1] in correct_answer else correct_answer
@@ -227,14 +248,14 @@ async def judge(question, correct_answer, predicted_answer):
         messages = [{'role': 'user', 'content': judge_prompt}]
         score = 0
         for _ in range(3):
-            response = await call_openai_raw(messages)  # use call_openai for api proxy
+            response = await call_openai_raw(messages, model=model, is_judge=True)  # use is_judge=True for judge-specific credentials
             grade_report = parse_judge_response(response)
             if grade_report['parse_error']:
                 continue
             score = int(grade_report['correct'])
             break
         if score == 0 and relaxed_em(correct_answer, predicted_answer):
-            response = await call_openai_raw(messages, model='gpt-4.1')  # use call_openai for api proxy
+            response = await call_openai_raw(messages, model=model, is_judge=True)  # use is_judge=True for judge-specific credentials
             grade_report = parse_judge_response(response)
             score = int(grade_report.get('correct', 0))
 
@@ -550,6 +571,11 @@ Once you’re confident everything is covered and verified, submit the final ans
             return "", 0, {}
         if self.predicted_answer is None:
             return "", 0, {}
+        
+        # Get judge model from context, environment, or use default
+        # context.server_host contains the model_name passed from command line
+        judge_model = context.server_host if hasattr(context, 'server_host') and context.server_host else os.getenv("JUDGE_OPENAI_MODEL", "gpt-3.5-turbo")
+        
         # print(self.label_answer)
         # print(self.predicted_answer[0])
         if '<q1>' in self.label_answer:
@@ -558,13 +584,13 @@ Once you’re confident everything is covered and verified, submit the final ans
             all_reward = []
             for k in label_answer_dict:
                 if k in predicted_answer_dict:
-                    reward = await judge(self.question, label_answer_dict[k], predicted_answer_dict[k])
+                    reward = await judge(self.question, label_answer_dict[k], predicted_answer_dict[k], model=judge_model)
                     all_reward.append(reward)
                 else:
                     all_reward.append(0)
             reward = sum(all_reward) / len(all_reward)
             return "", reward, {}
-        reward = await judge(self.question, self.label_answer, self.predicted_answer[0])
+        reward = await judge(self.question, self.label_answer, self.predicted_answer[0], model=judge_model)
         return "", reward, {}
 
     async def update_dataproto(self, out, item, messages, score, reward_dict, tag='main', metrics=None):

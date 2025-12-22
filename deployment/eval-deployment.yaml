@@ -25,6 +25,14 @@ spec:
           value: "http://local-llm.liuyunxin:8001/v1"
         - name: OPENAI_URL
           value: "http://local-llm.liuyunxin:8001/v1/chat/completions"
+        - name: JUDGE_OPENAI_API_KEY
+          value: "dummy"
+        - name: JUDGE_OPENAI_BASE_URL
+          value: "http://local-llm.liuyunxin:8001/v1"
+        - name: JUDGE_OPENAI_URL
+          value: "http://local-llm.liuyunxin:8001/v1/chat/completions"
+        - name: JUDGE_OPENAI_MODEL
+          value: "ByteDance-Seed/Seed-OSS-36B-Instruct"
         - name: CUDA_VISIBLE_DEVICES
           value: "0"
         - name: e

@@ -33,7 +33,7 @@ The completion may include tasks completed before this agent or plans for the ne
 
 Now give me your judge of <good> or <error>, and a one-sentence, very brief explanation.:
 '''
-    judge_results = await call_openai(scope_judge_prompt)
+    judge_results = await call_openai(scope_judge_prompt, is_judge=True)
     if '<good>' in judge_results:
         return 1, judge_results
     elif '<fine>' in judge_results:

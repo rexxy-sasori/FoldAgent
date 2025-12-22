@@ -29,23 +29,33 @@ def select_env(ability, config, extra_info=None):
     return EnvClass
 
 
-async def call_openai(messages, model='gpt-5-nano', max_retries=3):
-    openai_url = os.getenv("OPENAI_URL")
+async def call_openai(messages, model='gpt-5-nano', max_retries=3, is_judge=False):
+    if is_judge:
+        openai_url = os.getenv("JUDGE_OPENAI_URL", os.getenv("OPENAI_BASE_URL"))
+        api_key = os.getenv("JUDGE_OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
+    else:
+        openai_url = os.getenv("OPENAI_BASE_URL")
+        api_key = os.getenv("OPENAI_API_KEY")
+
     if isinstance(messages, str):
         messages = [{'role': 'user', 'content': messages}]
 
     for attempt in range(max_retries):
         try:
             async with httpx.AsyncClient(timeout=300.0) as c:
+                headers = {}
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                    
                 r = await c.post(openai_url, json={
                     "model": model,
                     "messages": messages
-                })
+                }, headers=headers)
                 r.raise_for_status()
                 return r.json()["content"]
         except Exception as e:
             if attempt == max_retries - 1:
-                print(f"[CALL OPENAI] Error after {max_retries} attempts: {str(e)}")
+                print(f"[CALL OPENAI{' (JUDGE)' if is_judge else ''}] Error after {max_retries} attempts: {str(e)}")
                 return f"Error after {max_retries} attempts: {str(e)}"
             await asyncio.sleep(1 * (attempt + 1))
     return ""

@@ -14,7 +14,7 @@ COPY external/verl/ ./external/verl/
 RUN pip3 install ./external/verl
 
 # Install additional Python dependencies
-RUN pip3 install fastapi uvicorn transformers numpy pandas tqdm omegaconf torch huggingface_hub==0.36.0
+RUN pip3 install fastapi uvicorn transformers numpy pandas tqdm omegaconf torch huggingface_hub==0.36.0 flash-attn 
 
 # Clean up unnecessary files after installation
 # RUN rm -rf /app/external/verl \

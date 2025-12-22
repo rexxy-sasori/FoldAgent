@@ -334,9 +334,14 @@ class AsyncSearchClient:
         raise last_exc  # should not reach
 
     async def search(self, query: str, k: int = 10):
+        logger.info(f"[SEARCH] Initiating search with query: '{query}' (top {k} results)")
         return await self._post("/search", {"query": query, "k": k})
 
     async def open(self, url: str | None = None, docid: str | None = None):
+        if url:
+            logger.info(f"[SEARCH] Opening URL: {url}")
+        elif docid:
+            logger.info(f"[SEARCH] Opening document with ID: {docid}")
         return await self._post("/open", {"url": url, "docid": docid})
 
 

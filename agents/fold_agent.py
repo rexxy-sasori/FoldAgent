@@ -3,6 +3,7 @@ import re
 import time
 import copy
 import asyncio
+import logging
 from functools import partial
 import random
 
@@ -66,13 +67,13 @@ async def process_item(
 
     # Select env
     EnvClass = select_env(ability, config, )
-    print(is_train, EnvClass)
+    logger.debug(f'Environment initialized - is_train: {is_train}, EnvClass: {EnvClass.__name__}')
     env = EnvClass(config, tokenizer, ability)
 
     try:
         await env.init_env(item)
     except Exception as e:
-        print(f"[Error] during environment init: {str(e)}")
+        logger.error(f"[Error] during environment init: {str(e)}")
 
     user_prompt, agent_config = await env.get_data(item, context)
     workflow = item.non_tensor_batch['extra_info'][0].get('workflow', None) or getattr(config.plugin, "workflow",
@@ -112,14 +113,14 @@ async def process_item(
     session_message = []
     while iteration < max_turn:
         if time.time() - session_start_time > session_timeout:
-            print('[SESSION] Session Timeout')
+            logger.info('[SESSION] Session Timeout')
             break
 
         iteration += 1
 
         if enable_summary and len(agent[current].context()) - init_len > config.response_length * 0.95:  # summary
             if len(agent) >= max_session:
-                print('[SESSION] Session OOC after session', len(agent))
+                logger.info('[SESSION] Session OOC after session %d', len(agent))
                 break
             agent[current].rollback(k=2)  # rollback last turn
             agent[current].append({'role': 'assistant', 'content': "", })
@@ -153,9 +154,13 @@ async def process_item(
             else:
                 description = fn_call['arguments'].get('description', 'Agent')
                 message_to_branch = fn_call['arguments'].get('prompt', 'Empty prompt')
-                print('[BRANCH]', description, len(agent['main'].context()))
+                branch_count = len(branches)
+                agent_name = f"#{branch_count}-" + description.replace(' ', '_')
+                context_length = len(agent['main'].context())
+                # Enhanced logging with more details
+                logger.info(f'[BRANCH] {description} | Agent: {agent_name} | Context length: {context_length} | Branch count: {branch_count + 1}')
+                logger.debug('[BRANCH] %s %d', description, len(agent['main'].context()))
                 # print(message_to_branch)
-                agent_name = f"#{len(branches)}-" + description.replace(' ', '_')
                 branches.append(agent_name)
                 branch_tasks[agent_name] = message_to_branch
                 history = agent['main'].messages()
@@ -198,8 +203,8 @@ async def process_item(
                 break
 
         if agent['main'].chat[-1]['role'] == 'user':
-            print('[ROLE ERROR]')
-            print(agent['main'].chat[-1])
+            logger.error('[ROLE ERROR]')
+            logger.error('%s', agent['main'].chat[-1])
             agent['main'].append({'role': 'assistant', 'content': str(response)})
 
         if process_reward:
@@ -210,14 +215,14 @@ async def process_item(
 
     env.stats['session_time'] = time.time() - session_start_time
 
-    print('[TASK] Task Finish, Start Reward')
+    logger.info('[TASK] Task Finish, Start Reward')
     try:
         score_msg, reward, reward_dict = await asyncio.wait_for(
             env.get_reward(item, agent['main'].messages(), context), timeout=60 * 10)
         score = (score_msg, reward)
-        print(score)
+        logger.debug(f'Reward score: {score}')
     except Exception as e:
-        print(f"[Error] Getting reward: {e}")
+        logger.error(f"[Error] Getting reward: {e}")
         score, reward_dict = ("", 0), {"ans_reward": 0.0, "format_reward": 0.0, "ref_reward": 0.0}
 
     outs = []
@@ -248,8 +253,8 @@ async def process_item(
             for name in agent:
                 for i, turn in enumerate(agent[name].chat):
                     if is_weird(str(turn)):
-                        print('[CJK ERROR]')
-                        print(str(turn))
+                        logger.error('[CJK ERROR]')
+                        logger.error('%s', turn)
                         env.stats['is_cjk'] = 1
                         agent[name].set_process_reward(i, -1)
                         if 'flat' in process_reward:
@@ -274,7 +279,7 @@ async def process_item(
                     return_message = branch_return[name]
                     is_focus, justification = await judge_scope(assigned_task, return_message)
                     if is_focus < 0:  # scope check, skip summary turn
-                        print(f'[FOCUS] Branch beyond focus: //{name}//. {justification}')
+                        logger.error(f'[FOCUS] Branch beyond focus: //{name}//. {justification}')
                         agent[name].set_process_reward([i for i in range(len(agent[name].chat) - 1)], -0.2)
                         if 'flat' in process_reward:
                             agent[name].set_cache('reward', 1 - 0.2)
@@ -322,7 +327,7 @@ async def process_item(
                     return_message = branch_return[name]
                     is_focus, justification = await judge_scope(assigned_task, return_message)
                     if is_focus < 0:  # scope check, skip summary turn
-                        print(f'[FOCUS] Branch beyond focus: //{name}//. {justification}')
+                        logger.error(f'[FOCUS] Branch beyond focus: //{name}//. {justification}')
                         agent[name].set_process_reward([i for i in range(len(agent[name].chat) - 1)], -0.2)
                         if 'flat' in process_reward:
                             agent[name].set_cache('reward', 0 - 0.2)

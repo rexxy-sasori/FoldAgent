@@ -3,6 +3,7 @@ import re
 import time
 import copy
 import asyncio
+import logging
 from functools import partial
 import random
 
@@ -12,6 +13,8 @@ import torch
 from verl import DataProto
 from .utils import CallLLM, Agent, select_env, truncate_text, is_weird, TaskContext, run_action
 from .prompts import create_chat
+
+logger = logging.getLogger(__name__)
 
 
 async def process_item(
@@ -30,13 +33,13 @@ async def process_item(
     ability = item.non_tensor_batch['ability'][0]
     # Select env
     EnvClass = select_env(ability, config, )
-    print(is_train, EnvClass)
+    logger.debug(f'Environment initialized - is_train: {is_train}, EnvClass: {EnvClass.__name__}')
     env = EnvClass(config, tokenizer, ability)
 
     try:
         await env.init_env(item)
     except Exception as e:
-        print(f"[Error] during environment init: {str(e)}")
+        logger.error(f"[Error] during environment init: {str(e)}")
 
     user_prompt, agent_config = await env.get_data(item, context)
     workflow = item.non_tensor_batch['extra_info'][0].get('workflow', None) or getattr(config.plugin, "workflow",
@@ -60,14 +63,14 @@ async def process_item(
             break
         agent.append({'role': 'user', 'content': observation})
 
-    print('[TASK] Task Finish, Start Reward')
+    logger.info('[TASK] Task Finish, Start Reward')
     try:
         score_msg, reward, reward_dict = await asyncio.wait_for(
             env.get_reward(item, agent.messages(), context), timeout=60 * 10)
         score = (score_msg, reward)
-        print(score)
+        logger.debug(f'Reward score: {score}')
     except Exception as e:
-        print(f"[Error] Getting reward: {e}")
+        logger.error(f"[Error] Getting reward: {e}")
         score, reward_dict = ("", 0), {"ans_reward": 0.0, "format_reward": 0.0, "ref_reward": 0.0}
 
     out = await agent.dataproto()

@@ -15,33 +15,33 @@ spec:
     spec:
       containers:
       - name: foldagent-eval
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:v0.23
-        command: ["sleep", "infinity"]
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:v0.24
+        # command: ["sleep", "infinity"]
         # Uncomment below to run evaluation automatically
-        # command: ["bash", "-c"]
-        # args:
-        #   - >
-        #     python3 scripts/eval_bc.py
-        #     --workflow search_branch
-        #     --model_name ByteDance-Seed/Seed-OSS-36B-Instruct
-        #     --local_search_url http://search-server.liuyunxin.svc.cluster.local:8000
-        #     --data_path /app/data/bc_test.parquet
-        #     --output_dir /root/results
-        #     --num_workers 32
-        #     --prompt_length 16384
-        #     --response_length 32768
-        #     --max_turn 200
-        #     --val_max_turn 200
-        #     --max_session 10
-        #     --val_max_session 10
+        command: ["bash", "-c"]
+        args:
+          - >
+            python3 scripts/eval_bc.py
+            --workflow search_branch
+            --model_name ByteDance-Seed/Seed-OSS-36B-Instruct
+            --local_search_url http://search-server.liuyunxin.svc.cluster.local:8000
+            --data_path /app/data/bc_test.parquet
+            --output_dir /root/results
+            --num_workers 32
+            --prompt_length 16384
+            --response_length 32768
+            --max_turn 200
+            --val_max_turn 200
+            --max_session 10
+            --val_max_session 10
         resources:
           limits:
             nvidia.com/gpu: 1
-            memory: "32Gi"
-            cpu: "8"
+            memory: "128Gi"
+            cpu: "64"
           requests:
-            memory: "16Gi"
-            cpu: "4"
+            memory: "64Gi"
+            cpu: "32"
         env:
         - name: OPENAI_API_KEY
           value: "dummy"
@@ -56,7 +56,7 @@ spec:
         - name: JUDGE_OPENAI_URL
           value: "https://api.moonshot.cn/v1/chat/completions"
         - name: JUDGE_OPENAI_MODEL
-          value: "kimi-k2-thinking"
+          value: "moonshot-v1-128k"
         - name: CUDA_VISIBLE_DEVICES
           value: "0"
         - name: NO_PROXY

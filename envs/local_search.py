@@ -12,6 +12,7 @@ import logging
 # call this once early (after your logging.basicConfig if you use it)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
 
 GRADER_TEMPLATE = """
 Judge whether the following [response] to [question] is correct or not based on the precise and unambiguous [correct_answer] below.
@@ -197,7 +198,7 @@ async def call_openai(messages, model='gpt-3.5-turbo', max_retries=3, is_judge=F
                 return r.json()["choices"][0]["message"]["content"]
         except Exception as e:
             if attempt == max_retries - 1:
-                print(f"[CALL OPENAI{' (JUDGE)' if is_judge else ''}] Error after {max_retries} attempts: {str(e)}")
+                logger.error(f"[CALL OPENAI{' (JUDGE)' if is_judge else ''}] Error after {max_retries} attempts: {str(e)}")
                 return f"Error after {max_retries} attempts: {str(e)}"
             await asyncio.sleep(1 * (attempt + 1))
     return ""
@@ -223,7 +224,7 @@ async def call_openai_raw(messages, model='gpt-3.5-turbo', max_retries=3, is_jud
             return resp.choices[0].message.content or ""
         except Exception as e:
             if attempt == max_retries - 1:
-                print(f"[OPENAI{' (JUDGE)' if is_judge else ''}] Error after {max_retries} attempts: {e}")
+                logger.error(f"[OPENAI{' (JUDGE)' if is_judge else ''}] Error after {max_retries} attempts: {e}")
                 return f"Error: {e}"
             await asyncio.sleep(1 * (attempt + 1))
     return ""
@@ -259,7 +260,7 @@ async def judge(question, correct_answer, predicted_answer, model=None):
             grade_report = parse_judge_response(response)
             score = int(grade_report.get('correct', 0))
 
-    print(f"[Judged] score={score}\nLabel: " + correct_answer + '\nModel: ' + predicted_answer.split('\n')[0])
+    logger.info(f"[Judged] score={score}\nLabel: {correct_answer}\nModel: {predicted_answer.split('\n')[0]}")
     return score
 
 
@@ -350,11 +351,11 @@ def extract_fn_call(text):
         return None
     if '<tool_call>' in text or '<answer>' in text:
         json_tool = extract_json_tool(text)
-        print(json_tool)
+        logger.debug(json_tool)
         if len(json_tool) > 0:
             return json_tool
         else:
-            print(text)
+            logger.debug(text)
     text = re.split(r'<\[[^\]]+\]>', text)[-1].strip()
     matches = list(re.finditer(r'(?m)^[ \t]*<function=([^>]+)>\s*(.*?)\s*</function>',
                                text, re.DOTALL))
@@ -460,27 +461,32 @@ class LocalSearch:
                         observation += '[Error] The "search" function requires a "query" argument.'
                     else:
                         observation += f'[Search Results for "{query}"]\n'
-                        serp = await self.client.search(query, 50)
-                        show_topk = 0
-                        for i, page in enumerate(serp, 1):
-                            # Formatted entry for each search result
-                            if page['docid'] in self.visited_pages:
-                                page['text'] = "(This page was already seen in a previous search. Here, a shorter snippet is shown. If you find this page relevant, please use the open_page tool to inspect the full content) " + " ".join(page['text'].split()[:128])
-                                show_topk += 0.25
-                            else:
-                                self.visited_pages.add(page['docid'])
-                                self.stats['visit_pages'] = len(self.visited_pages)
-                                page['text'] = " ".join(page['text'].split()[:512])  # 512
-                                show_topk += 1
-                            observation += (
-                                f"\n--- #{i}: {page['docid']}---\n"
-                                f"docid: {page['docid']}\n"
-                                f"url: {page['url']}\n"
-                                f"content: {page['text']}\n"
-                            )
-                            if show_topk >= topk:
-                                break
-                        observation += "\n"
+                        try:
+                            serp = await self.client.search(query, 50)
+                            show_topk = 0
+                            for i, page in enumerate(serp, 1):
+                                # Formatted entry for each search result
+                                if page['docid'] in self.visited_pages:
+                                    page['text'] = "(This page was already seen in a previous search. Here, a shorter snippet is shown. If you find this page relevant, please use the open_page tool to inspect the full content) " + " ".join(page['text'].split()[:128])
+                                    show_topk += 0.25
+                                else:
+                                    self.visited_pages.add(page['docid'])
+                                    self.stats['visit_pages'] = len(self.visited_pages)
+                                    page['text'] = " ".join(page['text'].split()[:512])  # 512
+                                    show_topk += 1
+                                observation += (
+                                    f"\n--- #{i}: {page['docid']}---\n"
+                                    f"docid: {page['docid']}\n"
+                                    f"url: {page['url']}\n"
+                                    f"content: {page['text']}\n"
+                                )
+                                if show_topk >= topk:
+                                    break
+                            observation += "\n"
+                        except Exception as e:
+                            observation += f"[Error] Search failed: {str(e)}"
+                            logger.error(f"[SEARCH ERROR] {str(e)}")
+                            logging.error(f"[SEARCH ERROR] {str(e)}")
 
                 elif name == 'open_page':
                     self.stats['open_page'] += 1
@@ -491,17 +497,22 @@ class LocalSearch:
                         # Clearer error for missing parameters
                         observation += '[Error] The "open_page" function requires either a "docid" or a "url".'
                     else:
-                        open_pages = await self.client.open(url, docid)
-                        for page in open_pages:
-                            # Structured format for opened page content
-                            page['text'] = keep_first_n_words(page['text'], 4096)
-                            observation += (
-                                f"[Opened Page Content]\n"
-                                f"docid: {page['docid']}\n"
-                                f"url: {page['url']}\n"
-                                f"content: {page['text']}\n"
-                            )
-                        observation += "\n"
+                        try:
+                            open_pages = await self.client.open(url, docid)
+                            for page in open_pages:
+                                # Structured format for opened page content
+                                page['text'] = keep_first_n_words(page['text'], 4096)
+                                observation += (
+                                    f"[Opened Page Content]\n"
+                                    f"docid: {page['docid']}\n"
+                                    f"url: {page['url']}\n"
+                                    f"content: {page['text']}\n"
+                                )
+                            observation += "\n"
+                        except Exception as e:
+                            observation += f"[Error] Failed to open page: {str(e)}"
+                            logger.error(f"[OPEN PAGE ERROR] {str(e)}")
+                            logging.error(f"[OPEN PAGE ERROR] {str(e)}")
                 elif name == 'finish':
                     self.stats['is_finish'] = 1
                     self.is_finish = True
@@ -509,7 +520,7 @@ class LocalSearch:
                     explanation = fn['arguments'].get('explanation', None)
                     confidence = fn['arguments'].get('confidence', None)
                     if len(answer.strip()) == 0:
-                        print(response)
+                        logger.debug(response)
                         observation = ("Fail to parse answer. Please resubmit with the correct tool call format, eg\n"
                                        "<function=finish>\n" "<parameter=answer>YOUR ANSWER</parameter>\n"
                                        "<parameter=explanation>YOUR EXPLANATION</parameter>\n"
@@ -624,26 +635,26 @@ async def _run_simple_test():
     client = AsyncSearchClient(base_url=base_url)
     try:
         query = "Elon Musk"  # change if you like
-        print(f"\n=== SEARCH: {query!r} ===")
+        logger.debug(f"\n=== SEARCH: {query!r} ===")
         serp = await client.search(query, k=3)
-        print(f"got {len(serp)} results")
+        logger.debug(f"got {len(serp)} results")
         for i, r in enumerate(serp, 1):
-            print(f"{i}. docid={r.get('docid')}  url={r.get('url')}")
+            logger.debug(f"{i}. docid={r.get('docid')}  url={r.get('url')}")
 
         if not serp:
             return
 
         first = serp[0]
-        print("\n=== OPEN by docid ===")
+        logger.debug("\n=== OPEN by docid ===")
         opened_by_docid = await client.open(docid=first.get("docid"))
         if opened_by_docid:
-            print(f"docid={opened_by_docid[0].get('docid')}\nurl={opened_by_docid[0].get('url')}\n"
+            logger.debug(f"docid={opened_by_docid[0].get('docid')}\nurl={opened_by_docid[0].get('url')}\n"
                   f"content: {_snippet(opened_by_docid[0])}")
 
-        print("\n=== OPEN by url ===")
+        logger.debug("\n=== OPEN by url ===")
         opened_by_url = await client.open(url=first.get("url"))
         if opened_by_url:
-            print(f"docid={opened_by_url[0].get('docid')}\nurl={opened_by_url[0].get('url')}\n"
+            logger.debug(f"docid={opened_by_url[0].get('docid')}\nurl={opened_by_url[0].get('url')}\n"
                   f"content: {_snippet(opened_by_url[0])}")
     finally:
         await client.close()

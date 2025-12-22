@@ -2,6 +2,7 @@ import os
 import time
 import copy
 import uuid
+import logging
 from unittest.mock import patch
 from itertools import groupby
 import re, unicodedata
@@ -14,6 +15,8 @@ import torch
 import asyncio, httpx
 from verl import DataProto
 from envs.local_search import LocalSearch
+
+logger = logging.getLogger(__name__)
 
 
 def select_env(ability, config, extra_info=None):
@@ -55,7 +58,7 @@ async def call_openai(messages, model='gpt-5-nano', max_retries=3, is_judge=Fals
                 return r.json()["content"]
         except Exception as e:
             if attempt == max_retries - 1:
-                print(f"[CALL OPENAI{' (JUDGE)' if is_judge else ''}] Error after {max_retries} attempts: {str(e)}")
+                logger.error(f"[CALL OPENAI{' (JUDGE)' if is_judge else ''}] Error after {max_retries} attempts: {str(e)}")
                 return f"Error after {max_retries} attempts: {str(e)}"
             await asyncio.sleep(1 * (attempt + 1))
     return ""
@@ -154,7 +157,7 @@ class CallLLM:  # Call policy LLM in RL env
             max_tokens = min(max_tokens, kwargs['max_new_tokens'])
 
         if max_tokens < 10:
-            print(f"[DEBUG] max_tokens {max_tokens}, skip rollout")
+            logger.debug(f"[DEBUG] max_tokens {max_tokens}, skip rollout")
             return None
 
         uid = kwargs.pop('uid', self.meta_info.get('uid', None))
@@ -187,7 +190,7 @@ class CallLLM:  # Call policy LLM in RL env
                     return completion
 
             except Exception as e:
-                print(f"[CallLLM ERROR] {e}")
+                logger.error(f"[CallLLM ERROR] {e}")
                 await session.close()
                 await asyncio.sleep(2 ** attempt)
                 if attempt < 2:
@@ -272,10 +275,10 @@ class CallAPI:  # Call external API
                 }
             except Exception as e:
                 if attempt == 4:
-                    print(f"[CallAPI ERROR] Failed after 5 attempts: {e}")
+                    logger.error(f"[CallAPI ERROR] Failed after 5 attempts: {e}")
                     return None
                 wait_time = 2 ** attempt
-                print(f"[CallAPI] Attempt {attempt + 1} failed: {e}. Retrying in {wait_time}s...")
+                logger.debug(f"[CallAPI] Attempt {attempt + 1} failed: {e}. Retrying in {wait_time}s...")
                 await asyncio.sleep(wait_time)
         return None
 
@@ -284,7 +287,7 @@ def truncate_prompt(chat, prompt_length, tokenizer, prompt_turn):
     exceed_len = len(tokenizer.apply_chat_template(chat[:prompt_turn])) + 8 - prompt_length
     _cut_idx = 0
     while exceed_len > 0:  # truncate long user prompt
-        print('[PROMPT] now exceed', exceed_len, 'work on cut turn', _cut_idx)
+        logger.debug('[PROMPT] now exceed %d work on cut turn %d', exceed_len, _cut_idx)
         chat[_cut_idx]['content'] = tokenizer.decode(
             tokenizer.encode(chat[_cut_idx]['content'], add_special_tokens=False)[
                 exceed_len + 4:], add_special_tokens=False)
@@ -384,7 +387,7 @@ class AgentContext:
 
         prompt_ids = sum(self.chat_ids[:prompt_turn], [])
         if len(prompt_ids) > prompt_length:
-            print('[PROMPT] prompt truncated in dataproto')
+            logger.debug('[PROMPT] prompt truncated in dataproto')
         with patch.object(self.tokenizer, "padding_side", "left"):
             prompt_output = self.tokenizer.pad(dict(input_ids=[prompt_ids[-prompt_length:]]),
                                                padding="max_length",
@@ -485,7 +488,7 @@ class Agent(AgentContext):
         init_len = len(self.context(turn_cut=self.prompt_turn))
         while iteration < max_turn:
             if time.time() - session_start_time > session_timeout:  # TODO add session timeout
-                print('[SESSION] Session Timeout')
+                logger.info('[SESSION] Session Timeout')
                 break
             if len(self.context()) - init_len > max_tokens:  # summary
                 break
@@ -556,9 +559,9 @@ async def run_action(env, response):
             act = time.time()
             env_return = await asyncio.wait_for(env.run_action(response), timeout=120.0)
             if time.time() - act > 10:
-                print('Action Cost', time.time() - act)
+                logger.debug('Action Cost %.4f', time.time() - act)
         except asyncio.TimeoutError:
-            print('[ACTION] Action timed out after 120 seconds')
+            logger.info('[ACTION] Action timed out after 120 seconds')
             env_return = {'observation': 'Action timed out after 120 seconds'}
         if 'action' in env_return:
             action, arguments = env_return['action'], env_return.get('arguments', {})

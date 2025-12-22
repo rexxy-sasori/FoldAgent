@@ -572,9 +572,9 @@ Once you’re confident everything is covered and verified, submit the final ans
         if self.predicted_answer is None:
             return "", 0, {}
         
-        # Get judge model from context, environment, or use default
-        # context.server_host contains the model_name passed from command line
-        judge_model = context.server_host if hasattr(context, 'server_host') and context.server_host else os.getenv("JUDGE_OPENAI_MODEL", "gpt-3.5-turbo")
+        # Get judge model from environment variable first, then use default
+        # This ensures judge uses separate model from prediction
+        judge_model = os.getenv("JUDGE_OPENAI_MODEL", "gpt-3.5-turbo")
         
         # print(self.label_answer)
         # print(self.predicted_answer[0])

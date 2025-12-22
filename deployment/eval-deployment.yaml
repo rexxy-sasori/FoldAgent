@@ -1,15 +1,39 @@
-apiVersion: batch/v1
-kind: Job
+apiVersion: apps/v1
+kind: Deployment
 metadata:
-  name: foldagent-eval-job
+  name: foldagent-eval-deployment
   namespace: liuyunxin
 spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: foldagent-eval
   template:
+    metadata:
+      labels:
+        app: foldagent-eval
     spec:
       containers:
       - name: foldagent-eval
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:v0.21
-        command: ["python3", "scripts/eval_bc.py", "--workflow", "search_branch", "--model_name", "ByteDance-Seed/Seed-OSS-36B-Instruct", "--local_search_url", "http://search-server.liuyunxin.svc.cluster.local:8000", "--data_path", "/app/data/bc_test.parquet", "--output_dir", "/root/results", "--num_workers", "32", "--prompt_length", "16384", "--response_length", "32768", "--max_turn", "200", "--val_max_turn", "200", "--max_session", "10", "--val_max_session", "10"]
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:v0.23
+        command: ["sleep", "infinity"]
+        # Uncomment below to run evaluation automatically
+        # command: ["bash", "-c"]
+        # args:
+        #   - >
+        #     python3 scripts/eval_bc.py
+        #     --workflow search_branch
+        #     --model_name ByteDance-Seed/Seed-OSS-36B-Instruct
+        #     --local_search_url http://search-server.liuyunxin.svc.cluster.local:8000
+        #     --data_path /app/data/bc_test.parquet
+        #     --output_dir /root/results
+        #     --num_workers 32
+        #     --prompt_length 16384
+        #     --response_length 32768
+        #     --max_turn 200
+        #     --val_max_turn 200
+        #     --max_session 10
+        #     --val_max_session 10
         resources:
           limits:
             nvidia.com/gpu: 1
@@ -26,16 +50,16 @@ spec:
         - name: OPENAI_URL
           value: "http://local-llm.liuyunxin:8001/v1/chat/completions"
         - name: JUDGE_OPENAI_API_KEY
-          value: "dummy"
+          value: "sk-3bAfYybli7IW4Nmwl7KQiyxFTgnsDs0yJzwbTnMHD5EDTObj"
         - name: JUDGE_OPENAI_BASE_URL
-          value: "http://local-llm.liuyunxin:8001/v1"
+          value: "https://api.moonshot.cn/v1"
         - name: JUDGE_OPENAI_URL
-          value: "http://local-llm.liuyunxin:8001/v1/chat/completions"
+          value: "https://api.moonshot.cn/v1/chat/completions"
         - name: JUDGE_OPENAI_MODEL
-          value: "ByteDance-Seed/Seed-OSS-36B-Instruct"
+          value: "kimi-k2-thinking"
         - name: CUDA_VISIBLE_DEVICES
           value: "0"
-        - name: e
+        - name: NO_PROXY
           value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
         - name: no_proxy
           value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
@@ -62,4 +86,4 @@ spec:
       - name: gpfshome
         persistentVolumeClaim:
           claimName: pvc-gpfshome-liuyunxin
-      restartPolicy: OnFailure
+      restartPolicy: Always

@@ -6,11 +6,23 @@ import numpy as np
 import pandas as pd
 import sys
 import warnings
+import logging
 from pathlib import Path
 from datetime import datetime
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('eval_bc.log')
+    ]
+)
+logger = logging.getLogger('eval_bc')
 
 warnings.filterwarnings('ignore', message='.*fast tokenizer.*')
 
@@ -54,31 +66,50 @@ def parse_args():
 
 
 async def eval_one(row, config, tokenizer, model_name):
+    instance_id = row['extra_info'].get('instance_id', 'unknown')
+    item_logger = logging.getLogger(f'eval_bc.item-{instance_id}')
+    item_logger.info(f"Starting evaluation for instance_id={instance_id}")
+    
+    item_logger.debug(f"Creating TaskContext with model: {model_name}")
     context = TaskContext(config=config, global_step=0, server_host=model_name,
                           server_port=0, is_train=False, tokenizer=tokenizer)
 
+    item_logger.debug(f"Creating DataProto for instance")
     item = DataProto()
     item.non_tensor_batch = {
         'ability': np.array([row['ability']], dtype=object),
         'extra_info': np.array([row['extra_info']], dtype=object),
-        'uid': np.array([row['extra_info'].get('instance_id', 'unknown')], dtype=object),
+        'uid': np.array([instance_id], dtype=object),
         'reward_model': np.array([row['reward_model']], dtype=object),
     }
     item.meta_info = {'generation_kwargs': {}, 'max_turn': config.actor_rollout_ref.rollout.plugin.val_max_turn}
 
+    item_logger.info(f"Calling process_item for evaluation")
     output = await process_item(item, context, CallAPI)
+    item_logger.info(f"process_item completed")
 
+    score = output.non_tensor_batch.get('extra_data', [{}])[0].get('stats', {}).get('score', 0) if output else 0
+    status = 'success' if output else 'failed'
+    data_source = row.get('data_source', 'unknown')
+    
     result = {
-        'instance_id': row['extra_info'].get('instance_id', 'unknown'),
-        'data_source': row.get('data_source', 'unknown'),
-        'score': output.non_tensor_batch.get('extra_data', [{}])[0].get('stats', {}).get('score', 0) if output else 0,
-        'status': 'success' if output else 'failed'
+        'instance_id': instance_id,
+        'data_source': data_source,
+        'score': score,
+        'status': status
     }
+    
+    item_logger.info(f"Evaluation result: instance_id={instance_id}, data_source={data_source}, status={status}, score={score}")
     return result
 
 
 async def worker(worker_id, rows, args, pbar, shared_scores):
+    worker_logger = logging.getLogger(f'eval_bc.worker-{worker_id}')
+    worker_logger.info(f"Initializing worker {worker_id} with {len(rows)} items")
+    
+    worker_logger.info(f"Loading tokenizer for model: {args.model_name}")
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
+    worker_logger.info(f"Tokenizer loaded successfully")
 
     config = OmegaConf.create({
         'actor_rollout_ref': {'rollout': {
@@ -102,8 +133,14 @@ async def worker(worker_id, rows, args, pbar, shared_scores):
     })
 
     results = []
-    for row in rows:
+    for idx, row in enumerate(rows):
+        instance_id = row['extra_info'].get('instance_id', 'unknown')
+        worker_logger.info(f"Processing item {idx+1}/{len(rows)}: instance_id={instance_id}")
+        
         result = await eval_one(row, config, tokenizer, args.model_name)
+        
+        worker_logger.info(f"Completed item {idx+1}/{len(rows)}: instance_id={result['instance_id']}, status={result['status']}, score={result['score']}")
+        
         results.append(result)
         shared_scores.append(result['score'])
         avg_score = np.mean(shared_scores)
@@ -114,24 +151,40 @@ async def worker(worker_id, rows, args, pbar, shared_scores):
 
 
 def main():
+    logger.info("Starting BrowseComp-Plus evaluation script")
+    
     args = parse_args()
+    logger.info(f"Parsed arguments: {args}")
+    
     os.environ["LOCAL_SEARCH_URL"] = args.local_search_url
+    logger.info(f"Set LOCAL_SEARCH_URL to {args.local_search_url}")
 
     # Load data
+    logger.info(f"Loading data from {args.data_path}")
     df = pd.read_parquet(args.data_path)
+    logger.info(f"Successfully loaded {len(df)} items")
     print(f"Loaded {len(df)} items")
 
     # Split for workers
+    logger.info(f"Splitting data into {args.num_workers} chunks")
     chunk_size = len(df) // args.num_workers
     chunks = [df.iloc[i*chunk_size:(i+1)*chunk_size if i < args.num_workers-1 else len(df)]
               for i in range(args.num_workers)]
+    logger.info(f"Created {len(chunks)} chunks with sizes: {[len(c) for c in chunks]}")
 
     # Run workers with progress bar
+    logger.info(f"Initializing evaluation with {args.num_workers} workers")
+    logger.info(f"Using workflow: {args.workflow}, model: {args.model_name}")
+    logger.info(f"Configuration: prompt_length={args.prompt_length}, response_length={args.response_length}")
+    logger.info(f"Max turns: {args.max_turn}, max sessions: {args.max_session}")
+    
     async def run_all():
         shared_scores = []
         with tqdm(total=len(df), desc="Evaluating", unit="item") as pbar:
+            logger.info("Starting worker tasks")
             tasks = [worker(i, [chunks[i].iloc[j] for j in range(len(chunks[i]))], args, pbar, shared_scores)
                      for i in range(args.num_workers)]
+            logger.info(f"Launched {len(tasks)} worker tasks")
             return await asyncio.gather(*tasks)
 
     all_results = asyncio.run(run_all())
@@ -139,8 +192,11 @@ def main():
 
     # Summary overall
     avg_score = np.mean([r['score'] for r in results])
+    success_count = sum(r['status']=='success' for r in results)
+    logger.info(f"{'='*60}")
+    logger.info(f"Overall - Avg Score: {avg_score:.4f}, Success: {success_count}/{len(results)}")
     print(f"\n{'='*60}")
-    print(f"Overall - Avg Score: {avg_score:.4f}, Success: {sum(r['status']=='success' for r in results)}/{len(results)}")
+    print(f"Overall - Avg Score: {avg_score:.4f}, Success: {success_count}/{len(results)}")
 
     # Summary by data_source
     from collections import defaultdict
@@ -148,18 +204,28 @@ def main():
     for r in results:
         by_source[r['data_source']].append(r['score'])
 
+    logger.info(f"\nBy Data Source:")
     print(f"\nBy Data Source:")
     for source in sorted(by_source.keys()):
         scores = by_source[source]
-        print(f"  {source}: {np.mean(scores):.4f} ({len(scores)} items)")
+        source_avg = np.mean(scores)
+        source_count = len(scores)
+        logger.info(f"  {source}: {source_avg:.4f} ({source_count} items)")
+        print(f"  {source}: {source_avg:.4f} ({source_count} items)")
 
     # Save
+    logger.info(f"\nSaving results...")
     Path(args.output_dir).mkdir(exist_ok=True)
     output_file = Path(args.output_dir) / f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    logger.info(f"Creating summary statistics")
     summary_by_source = {src: {'avg_score': float(np.mean(scores)), 'count': len(scores)}
                          for src, scores in by_source.items()}
+    
+    logger.info(f"Dumping results to JSON file: {output_file}")
     json.dump({'avg_score': avg_score, 'by_source': summary_by_source, 'results': results},
               open(output_file, 'w'), indent=2)
+    
+    logger.info(f"Results saved successfully to {output_file}")
     print(f"\nSaved to {output_file}")
 
 

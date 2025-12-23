@@ -1,0 +1,52 @@
+Forwarding from 127.0.0.1:8428 -> 8428
+Forwarding from [::1]:8428 -> 8428
+Forwarding from 127.0.0.1:8428 -> 8428
+Forwarding from [::1]:8428 -> 8428
+Forwarding from 127.0.0.1:8428 -> 8428
+Forwarding from [::1]:8428 -> 8428
+Handling connection for 8428
+Handling connection for 8428
+Handling connection for 8428
+Handling connection for 8428
+Handling connection for 8428
+Handling connection for 8428
+Handling connection for 8428
+Handling connection for 8428
+Handling connection for 8428
+Handling connection for 8428
+E1223 16:06:42.482326   60208 portforward.go:392] error copying from local connection to remote stream: read tcp6 [::1]:8428->[::1]:52032: read: connection reset by peer
+E1223 16:06:42.482326   60208 portforward.go:392] error copying from local connection to remote stream: read tcp6 [::1]:8428->[::1]:52034: read: connection reset by peer
+Handling connection for 8428
+E1223 16:29:19.639052   60208 portforward.go:407] an error occurred forwarding 8428 -> 8428: error forwarding port 8428 to pod 042ef7d21cab0872c4a6e1763d06886cca306a5c67a665a965829ba7057472f1, uid : failed to find sandbox "042ef7d21cab0872c4a6e1763d06886cca306a5c67a665a965829ba7057472f1" in store: not found
+E1223 16:29:19.641551   60208 portforward.go:233] lost connection to pod
+Forwarding from 127.0.0.1:3000 -> 3000
+Forwarding from [::1]:3000 -> 3000
+Handling connection for 3000
+Handling connection for 3000
+Handling connection for 3000
+Handling connection for 3000
+Handling connection for 3000
+Handling connection for 3000
+Handling connection for 3000
+E1223 18:55:21.332544   72972 portforward.go:392] error copying from local connection to remote stream: read tcp6 [::1]:3000->[::1]:49785: read: connection reset by peer
+Handling connection for 3000
+Handling connection for 3000
+Handling connection for 3000
+Handling connection for 3000
+Handling connection for 3000
+Unable to listen on port 3000: Listeners failed to create with the following errors: [unable to create listener: Error listen tcp4 127.0.0.1:3000: bind: address already in use unable to create listener: Error listen tcp6 [::1]:3000: bind: address already in use]
+error: unable to listen on any of the requested ports: [{3000 3000}]
+E1223 18:56:32.738514   72972 portforward.go:392] error copying from local connection to remote stream: read tcp6 [::1]:3000->[::1]:49879: read: connection reset by peer
+Handling connection for 3000
+Handling connection for 3000
+Handling connection for 3000
+Handling connection for 3000
+Handling connection for 3000
+Handling connection for 3000
+Handling connection for 3000
+Handling connection for 3000
+Handling connection for 3000
+Handling connection for 3000
+Handling connection for 3000
+E1223 20:06:20.638185   72972 portforward.go:407] an error occurred forwarding 3000 -> 3000: error forwarding port 3000 to pod 91fa8b95725ef215c13dc86e0ed7a3e3c22c8506736ae4285f830b5c376d0cde, uid : failed to find sandbox "91fa8b95725ef215c13dc86e0ed7a3e3c22c8506736ae4285f830b5c376d0cde" in store: not found
+E1223 20:06:20.644106   72972 portforward.go:233] lost connection to pod

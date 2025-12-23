@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
       - name: search-server
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:v0.31
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:v0.33
         # command: ["sleep", "infinity"]
         command: ["bash", "-c"]
         args:
@@ -30,8 +30,9 @@ spec:
             memory: "32Gi"
             cpu: "8"
           requests:
-            memory: "16Gi"
-            cpu: "4"
+            nvidia.com/gpu: 1
+            memory: "32Gi"
+            cpu: "8"
         env:
         - name: NUM_GPUS
           value: "1"

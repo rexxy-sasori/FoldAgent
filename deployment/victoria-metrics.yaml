@@ -1,0 +1,143 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: victoria-metrics
+  namespace: liuyunxin
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: victoria-metrics
+  namespace: liuyunxin
+rules:
+- apiGroups: [""]
+  resources:
+    - pods
+    - services
+    - endpoints
+  verbs:
+    - get
+    - list
+    - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: victoria-metrics
+  namespace: liuyunxin
+subjects:
+- kind: ServiceAccount
+  name: victoria-metrics
+  namespace: liuyunxin
+roleRef:
+  kind: Role
+  name: victoria-metrics
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vm-scrape-config
+  namespace: liuyunxin
+data:
+  promscrape.yaml: |
+    global:
+      scrape_interval: 15s
+
+    scrape_configs:
+    - job_name: "pods"
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+          - liuyunxin
+      relabel_configs:
+      # Set default metrics path for all containers
+      - action: replace
+        target_label: __metrics_path__
+        replacement: /metrics
+      # Use container port for all containers
+      - action: replace
+        source_labels: [__address__, __meta_kubernetes_pod_container_port_number]
+        target_label: __address__
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+      # Add container-specific labels
+      - action: replace
+        source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod_name
+      - action: replace
+        source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - action: replace
+        source_labels: [__meta_kubernetes_pod_label_app]
+        target_label: app
+      - action: replace
+        source_labels: [__meta_kubernetes_pod_container_name]
+        target_label: container_name
+      - action: replace
+        source_labels: [__meta_kubernetes_pod_uid]
+        target_label: pod_uid
+      - action: replace
+        source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: node_name
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: victoria-metrics
+  namespace: liuyunxin
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: victoria-metrics
+  template:
+    metadata:
+      labels:
+        app: victoria-metrics
+    spec:
+      serviceAccountName: victoria-metrics   # ← FIX
+      containers:
+      - name: vm-single
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/victoriametrics/victoria-metrics:v1.97.1-linux-amd64
+        args:
+          - -storageDataPath=/storage
+          - -retentionPeriod=90d
+          - -promscrape.config=/etc/vm/promscrape.yaml
+          - -httpListenAddr=:8428
+        ports:
+        - containerPort: 8428
+          name: http
+        resources:
+          requests:
+            cpu: "4"
+            memory: "2Gi"
+          limits:
+            cpu: "4"
+            memory: "2Gi"
+        volumeMounts:
+        - name: storage
+          mountPath: /storage
+        - name: config
+          mountPath: /etc/vm
+      volumes:
+      - name: storage
+        persistentVolumeClaim:
+          claimName: pvc-gpfshome-liuyunxin
+      - name: config
+        configMap:
+          name: vm-scrape-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: victoria-metrics
+  namespace: liuyunxin
+spec:
+  selector:
+    app: victoria-metrics
+  ports:
+  - name: http
+    port: 8428
+    targetPort: 8428

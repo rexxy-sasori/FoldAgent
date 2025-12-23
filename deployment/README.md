@@ -94,10 +94,10 @@ curl -X POST http://localhost:8000/search -H "Content-Type: application/json" -d
 
 ```bash
 # Forward port to local machine
-kubectl port-forward service/local-llm 8001:8001 -n liuyunxin
+kubectl port-forward service/local-llm 8080:8080 -n liuyunxin
 
 # Test with curl (matches the main README's vLLM setup)
-curl -X POST http://localhost:8001/v1/chat/completions -H "Content-Type: application/json" -H "Authorization: Bearer dummy" -d '{"model": "ByteDance-Seed/Seed-OSS-36B-Instruct", "messages": [{"role": "user", "content": "Hello"}]}'
+curl -X POST http://localhost:8080/v1/chat/completions -H "Content-Type: application/json" -H "Authorization: Bearer dummy" -d '{"model": "ByteDance-Seed/Seed-OSS-36B-Instruct", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
 Note: The Local LLM uses vLLM with the `ByteDance-Seed/Seed-OSS-36B-Instruct` model, configured with a maximum model length of 131072 tokens.
@@ -189,4 +189,4 @@ resources:
 
 ### Evaluation Failures
 - Check logs for API connectivity issues: `kubectl logs <eval-pod-name> -n liuyunxin`
-- Verify service URLs are correct: `http://search-server.liuyunxin:8000` and `http://local-llm.liuyunxin:8001/v1`
+- Verify service URLs are correct: `http://search-server.liuyunxin:8000` and `http://local-llm.liuyunxin:8080/v1`

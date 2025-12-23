@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: foldagent-eval
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:v0.31
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:v0.33
         # command: ["sleep", "infinity"]
         # Uncomment below to run evaluation automatically
         command: ["bash", "-c"]
@@ -37,9 +37,8 @@ spec:
             && sleep infinity
         resources:
           limits:
-            nvidia.com/gpu: 1
-            memory: "128Gi"
-            cpu: "64"
+            memory: "64Gi"
+            cpu: "32"
           requests:
             memory: "64Gi"
             cpu: "32"
@@ -50,18 +49,18 @@ spec:
               name: foldagent-eval-secrets
               key: openai-api-key
         - name: OPENAI_BASE_URL
-          value: "http://local-llm.liuyunxin:8001/v1"
+          value: "http://local-llm.liuyunxin:8080/v1"
         - name: OPENAI_URL
-          value: "http://local-llm.liuyunxin:8001/v1/chat/completions"
+          value: "http://local-llm.liuyunxin:8080/v1/chat/completions"
         - name: JUDGE_OPENAI_API_KEY
           valueFrom:
             secretKeyRef:
               name: foldagent-eval-secrets
               key: openai-api-key
         - name: JUDGE_OPENAI_BASE_URL
-          value: "http://local-llm.liuyunxin:8001/v1"
+          value: "http://local-llm.liuyunxin:8080/v1"
         - name: JUDGE_OPENAI_URL
-          value: "http://local-llm.liuyunxin:8001/v1/chat/completions"
+          value: "http://local-llm.liuyunxin:8080/v1/chat/completions"
         - name: JUDGE_OPENAI_MODEL
           value: "ByteDance-Seed/Seed-OSS-36B-Instruct"
         - name: CUDA_VISIBLE_DEVICES

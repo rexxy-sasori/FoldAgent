@@ -16,6 +16,35 @@ spec:
         app: local-llm
     spec:
       containers:
+      - name: nvidia-dcgm-exporter
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/docker.io/nvidia/dcgm-exporter:4.4.2-4.7.1-ubuntu22.04-linux-amd64
+        ports:
+        - containerPort: 9400
+        securityContext:
+          runAsUser: 0
+          capabilities:
+            add:
+            - SYS_ADMIN
+        resources:
+          limits:
+            memory: 500Mi
+            cpu: "500m"
+            nvidia.com/gpu: 1
+          requests:
+            memory: 500Mi
+            cpu: "500m"
+            nvidia.com/gpu: 1
+        volumeMounts:
+        - name: nvidia-libs
+          mountPath: /usr/local/nvidia/lib
+          readOnly: true
+        env:
+        - name: LD_LIBRARY_PATH
+          value: /usr/local/nvidia/lib:/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu
+        - name: DCGM_EXPORTER_LISTEN
+          value: ":9400"
+        - name: DCGM_EXPORTER_KUBERNETES
+          value: "true"
       - name: local-llm
         image:  harbor.xa.xshixun.com:7443/hanfeigeng/vllm/vllm-openai:v0.10.2-linux-amd64
         #command: ["sleep", "infinity"]
@@ -28,9 +57,9 @@ spec:
           
           # Start vllm server
           echo "Starting vllm server..."
-          vllm serve ByteDance-Seed/Seed-OSS-36B-Instruct --port 8001 --max-model-len 131072
+          vllm serve ByteDance-Seed/Seed-OSS-36B-Instruct --port 8080 --max-model-len 131072
         ports:
-        - containerPort: 8001
+        - containerPort: 8080
         env:
         - name: CUDA_VISIBLE_DEVICES
           value: "0"
@@ -71,6 +100,9 @@ spec:
       - name: gpfshome
         persistentVolumeClaim:
           claimName: pvc-gpfshome-liuyunxin
+      - name: nvidia-libs
+        hostPath:
+          path: /usr/lib/x86_64-linux-gnu
 
 ---
 apiVersion: v1
@@ -82,6 +114,6 @@ spec:
   selector:
     app: local-llm
   ports:
-  - port: 8001
-    targetPort: 8001
+  - port: 8080
+    targetPort: 8080
   type: ClusterIP

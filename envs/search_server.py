@@ -27,6 +27,7 @@ from transformers import AutoTokenizer, AutoModel
 from datasets import load_dataset
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -75,30 +76,65 @@ class FastMetricsTracker:
         self.request_count = 0
         self.total_time = 0.0
         self.max_time = 0.0
+        self.min_time = float('inf')
+        self.success_count = 0
+        self.error_count = 0
         self.last_reset = time.time()
         self.lock = threading.Lock()
 
-    def record_request(self, process_time_ms: float):
+    def record_request(self, process_time_ms: float, success: bool = True):
         with self.lock:
             self.request_count += 1
             self.total_time += process_time_ms
             self.max_time = max(self.max_time, process_time_ms)
+            if process_time_ms > 0:
+                self.min_time = min(self.min_time, process_time_ms)
+            if success:
+                self.success_count += 1
+            else:
+                self.error_count += 1
 
     def get_stats_and_reset(self):
         with self.lock:
             if self.request_count == 0:
-                return 0, 0.0, 0.0
+                return 0, 0.0, 0.0, float('inf')
 
             avg_time = self.total_time / self.request_count
-            stats = (self.request_count, avg_time, self.max_time)
+            stats = (self.request_count, avg_time, self.max_time, self.min_time)
 
             # Reset
             self.request_count = 0
             self.total_time = 0.0
             self.max_time = 0.0
+            self.min_time = float('inf')
+            self.success_count = 0
+            self.error_count = 0
             self.last_reset = time.time()
 
             return stats
+    
+    def get_current_stats(self):
+        with self.lock:
+            if self.request_count == 0:
+                return {
+                    'request_count': 0,
+                    'total_time': 0.0,
+                    'avg_time': 0.0,
+                    'max_time': 0.0,
+                    'min_time': float('inf'),
+                    'success_count': 0,
+                    'error_count': 0
+                }
+            
+            return {
+                'request_count': self.request_count,
+                'total_time': self.total_time,
+                'avg_time': self.total_time / self.request_count,
+                'max_time': self.max_time,
+                'min_time': self.min_time,
+                'success_count': self.success_count,
+                'error_count': self.error_count
+            }
 
 
 def last_token_pool(last_hidden_states, attention_mask):
@@ -353,9 +389,9 @@ class HighThroughputSearchServer:
         while True:
             try:
                 time.sleep(10.0)
-                req_count, avg_time, max_time = self.metrics.get_stats_and_reset()
+                req_count, avg_time, max_time, min_time = self.metrics.get_stats_and_reset()
                 if req_count > 0:
-                    logger.info(f"📊 10s: {req_count} req | {avg_time:.1f}ms avg | {max_time:.1f}ms max | "
+                    logger.info(f"📊 10s: {req_count} req | {avg_time:.1f}ms avg | {min_time:.1f}ms min | {max_time:.1f}ms max | "
                           f"Queues: {self.request_queue.qsize()}/{self.batch_queue.qsize()}/{self.result_queue.qsize()}")
             except Exception:
                 continue
@@ -383,16 +419,25 @@ class HighThroughputSearchServer:
 
             # Record metrics
             process_time_ms = (time.time() - start_time) * 1000
-            self.metrics.record_request(process_time_ms)
+            self.metrics.record_request(process_time_ms, success=True)
 
             return result
 
         except Full:
             self.pending_requests.pop(request_id, None)
+            process_time_ms = (time.time() - start_time) * 1000
+            self.metrics.record_request(process_time_ms, success=False)
             raise HTTPException(status_code=503, detail="Server overloaded")
         except asyncio.TimeoutError:
             self.pending_requests.pop(request_id, None)
+            process_time_ms = (time.time() - start_time) * 1000
+            self.metrics.record_request(process_time_ms, success=False)
             raise HTTPException(status_code=408, detail="Timeout")
+        except Exception:
+            self.pending_requests.pop(request_id, None)
+            process_time_ms = (time.time() - start_time) * 1000
+            self.metrics.record_request(process_time_ms, success=False)
+            raise
 
     def shutdown(self):
         """Clean shutdown"""
@@ -515,6 +560,60 @@ async def get_stats():
         },
         "pending": len(search_server.pending_requests)
     }
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+async def get_prometheus_metrics():
+    """Prometheus-compatible metrics endpoint"""
+    if not search_server:
+        return PlainTextResponse("", status_code=503)
+
+    metrics = []
+
+    # Add HELP and TYPE comments for each metric
+    metrics.append("# HELP search_server_request_count Total number of search requests")
+    metrics.append("# TYPE search_server_request_count counter")
+    metrics.append("# HELP search_server_success_count Number of successful search requests")
+    metrics.append("# TYPE search_server_success_count counter")
+    metrics.append("# HELP search_server_error_count Number of failed search requests")
+    metrics.append("# TYPE search_server_error_count counter")
+    metrics.append("# HELP search_server_avg_response_time Average response time in milliseconds")
+    metrics.append("# TYPE search_server_avg_response_time gauge")
+    metrics.append("# HELP search_server_max_response_time Maximum response time in milliseconds")
+    metrics.append("# TYPE search_server_max_response_time gauge")
+    metrics.append("# HELP search_server_min_response_time Minimum response time in milliseconds")
+    metrics.append("# TYPE search_server_min_response_time gauge")
+    metrics.append("# HELP search_server_corpus_size Total number of documents in corpus")
+    metrics.append("# TYPE search_server_corpus_size gauge")
+    metrics.append("# HELP search_server_num_workers Number of active workers")
+    metrics.append("# TYPE search_server_num_workers gauge")
+    metrics.append("# HELP search_server_request_queue_size Number of requests in queue")
+    metrics.append("# TYPE search_server_request_queue_size gauge")
+    metrics.append("# HELP search_server_batch_queue_size Number of batches in queue")
+    metrics.append("# TYPE search_server_batch_queue_size gauge")
+    metrics.append("# HELP search_server_result_queue_size Number of results in queue")
+    metrics.append("# TYPE search_server_result_queue_size gauge")
+    metrics.append("# HELP search_server_pending_requests Number of pending requests")
+    metrics.append("# TYPE search_server_pending_requests gauge")
+
+    # Get current stats from the metrics tracker
+    stats = search_server.metrics.get_current_stats()
+
+    # Add metric values
+    metrics.append(f"search_server_request_count {stats['request_count']}")
+    metrics.append(f"search_server_success_count {stats['success_count']}")
+    metrics.append(f"search_server_error_count {stats['error_count']}")
+    metrics.append(f"search_server_avg_response_time {stats['avg_time']:.2f}")
+    metrics.append(f"search_server_max_response_time {stats['max_time']:.2f}")
+    metrics.append(f"search_server_min_response_time {stats['min_time'] if stats['min_time'] != float('inf') else 0.0:.2f}")
+    metrics.append(f"search_server_corpus_size {len(search_server.docid_to_text)}")
+    metrics.append(f"search_server_num_workers {len(search_server.workers)}")
+    metrics.append(f"search_server_request_queue_size {search_server.request_queue.qsize()}")
+    metrics.append(f"search_server_batch_queue_size {search_server.batch_queue.qsize()}")
+    metrics.append(f"search_server_result_queue_size {search_server.result_queue.qsize()}")
+    metrics.append(f"search_server_pending_requests {len(search_server.pending_requests)}")
+
+    return PlainTextResponse("\n".join(metrics), status_code=200)
 
 
 def signal_handler(sig, frame):

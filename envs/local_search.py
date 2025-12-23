@@ -237,10 +237,13 @@ async def call_openai_raw(messages, model='gpt-3.5-turbo', max_retries=3, is_jud
             
             resp = await client.chat.completions.create(model=model, messages=messages)
             
-            logger.debug(f"[OPENAI RAW API{' (JUDGE)' if is_judge else ''}] Response status: {resp.status_code}")
-            logger.debug(f"[OPENAI RAW API{' (JUDGE)' if is_judge else ''}] Response usage: {resp.usage}")
+            logger.debug(f"[OPENAI RAW API{' (JUDGE)' if is_judge else ''}] Response usage: {getattr(resp, 'usage', 'Not available')}")
             
-            content = resp.choices[0].message.content or ""
+            try:
+                content = resp.choices[0].message.content or ""
+            except (AttributeError, IndexError):
+                content = ""
+                logger.warning(f"[OPENAI RAW API{' (JUDGE)' if is_judge else ''}] Unexpected response structure: {resp}")
             logger.info(f"[OPENAI RAW API{' (JUDGE)' if is_judge else ''}] Success - {base_url} (attempt {attempt+1}/{max_retries}), model: {model}")
             return content
         except Exception as e:
@@ -275,7 +278,7 @@ async def judge(question, correct_answer, predicted_answer, model=None):
             grade_report = parse_judge_response(response)
             if grade_report['parse_error']:
                 continue
-            score = int(grade_report['correct'])
+            score = int(grade_report.get('correct', 0))
             break
         if score == 0 and relaxed_em(correct_answer, predicted_answer):
             response = await call_openai_raw(messages, model=model, is_judge=True)  # use is_judge=True for judge-specific credentials

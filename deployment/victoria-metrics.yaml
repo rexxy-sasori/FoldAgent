@@ -82,6 +82,19 @@ data:
         source_labels: [__meta_kubernetes_pod_node_name]
         target_label: node_name
 ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vm-storage-pvc
+  namespace: liuyunxin
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+  storageClassName: rancher-local-path
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -102,7 +115,7 @@ spec:
       - name: vm-single
         image: harbor.xa.xshixun.com:7443/hanfeigeng/victoriametrics/victoria-metrics:v1.97.1-linux-amd64
         args:
-          - -storageDataPath=/storage
+          - -storageDataPath=/vm-storage
           - -retentionPeriod=90d
           - -promscrape.config=/etc/vm/promscrape.yaml
           - -httpListenAddr=:8428
@@ -117,14 +130,14 @@ spec:
             cpu: "4"
             memory: "2Gi"
         volumeMounts:
-        - name: storage
-          mountPath: /storage
+        - name: vm-storage
+          mountPath: /vm-storage
         - name: config
           mountPath: /etc/vm
       volumes:
-      - name: storage
+      - name: vm-storage
         persistentVolumeClaim:
-          claimName: pvc-gpfshome-liuyunxin
+          claimName: vm-storage-pvc
       - name: config
         configMap:
           name: vm-scrape-config

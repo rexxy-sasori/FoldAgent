@@ -8,7 +8,7 @@ from unittest.mock import patch
 from itertools import groupby
 import re, unicodedata
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Set, List
 from omegaconf import DictConfig
 from transformers import PreTrainedTokenizer
 import aiohttp
@@ -17,7 +17,195 @@ import asyncio, httpx
 from verl import DataProto
 from envs.local_search import LocalSearch
 
+# Prometheus metrics
+from prometheus_client import Gauge, Counter, Histogram, start_http_server
+import threading
+
 logger = logging.getLogger(__name__)
+
+
+# Prometheus metrics definition
+# Primary metrics
+app_theoretical_token_load = Gauge('app_theoretical_token_load', 'Theoretical token load across all branches')
+app_active_branches = Gauge('app_active_branches', 'Number of currently active branches')
+app_pruned_branches_total = Counter('app_pruned_branches_total', 'Total number of pruned branches')
+
+# Secondary metrics
+app_branch_age_seconds = Gauge('app_branch_age_seconds', 'Age of branches in seconds', ['branch_id'])
+app_token_generation_rate = Gauge('app_token_generation_rate', 'Token generation rate per branch', ['branch_id'])
+
+
+class BranchTracker:
+    """Tracks metrics for a single branch"""
+    def __init__(self, branch_id: str, parent_id: Optional[str] = None, prompt_messages: Optional[List[Dict]] = None, tokenizer=None):
+        self.branch_id = branch_id
+        self.parent_id = parent_id
+        self.vllm_req_id = None  # Set via OpenAI API's 'user' field or request metadata
+        self.status = "RUNNING"
+        self.created_at = time.time()
+        self.last_token_generated_at = self.created_at
+        self._tokenizer = tokenizer
+        
+        # Initialize token counts
+        if prompt_messages and tokenizer:
+            self.prompt_len = sum(len(tokenizer.encode(msg["content"], add_special_tokens=False)) for msg in prompt_messages)
+        else:
+            self.prompt_len = 0
+        
+        self.gen_len = 0
+        self.total_tokens = self.prompt_len
+        
+        # Register with branch registry
+        BranchRegistry.register_branch(self)
+    
+    def update_vllm_req_id(self, req_id: str):
+        """Update the vLLM request ID for this branch"""
+        self.vllm_req_id = req_id
+    
+    def update_status(self, new_status: str):
+        """Update branch status (RUNNING, PRUNED, COMPLETED)"""
+        old_status = self.status
+        self.status = new_status
+        
+        if new_status == "PRUNED" and old_status != "PRUNED":
+            app_pruned_branches_total.inc()
+            BranchRegistry.unregister_branch(self)
+        elif new_status == "COMPLETED":
+            BranchRegistry.unregister_branch(self)
+    
+    def increment_gen_len(self, num_tokens: int = 1):
+        """Update generation length when tokens are generated"""
+        self.gen_len += num_tokens
+        self.total_tokens = self.prompt_len + self.gen_len
+        
+        # Update token generation rate
+        current_time = time.time()
+        if current_time > self.last_token_generated_at:
+            time_diff = current_time - self.last_token_generated_at
+            rate = num_tokens / time_diff
+            app_token_generation_rate.labels(branch_id=self.branch_id).set(rate)
+        
+        self.last_token_generated_at = current_time
+    
+    def get_age(self) -> float:
+        """Return branch age in seconds"""
+        return time.time() - self.created_at
+    
+    def get_metrics(self) -> Dict:
+        """Get all metrics for this branch"""
+        return {
+            'branch_id': self.branch_id,
+            'parent_id': self.parent_id,
+            'vllm_req_id': self.vllm_req_id,
+            'status': self.status,
+            'prompt_len': self.prompt_len,
+            'gen_len': self.gen_len,
+            'total_tokens': self.total_tokens,
+            'created_at': self.created_at,
+            'age_seconds': self.get_age()
+        }
+
+
+class BranchRegistry:
+    """Singleton registry to track all branches"""
+    _instance = None
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+                cls._instance._branches: Dict[str, BranchTracker] = {}
+                cls._instance._metrics_server_started = False
+                cls._instance._metrics_thread = None
+                cls._instance._update_thread = None
+                cls._instance._stop_event = threading.Event()
+                
+                # Start metrics update thread
+                cls._instance._start_metrics_update()
+        return cls._instance
+    
+    @classmethod
+    def register_branch(cls, branch: BranchTracker):
+        """Register a new branch"""
+        registry = cls()
+        registry._branches[branch.branch_id] = branch
+        logger.debug(f"Registered branch: {branch.branch_id}")
+    
+    @classmethod
+    def unregister_branch(cls, branch: BranchTracker):
+        """Unregister a branch"""
+        registry = cls()
+        if branch.branch_id in registry._branches:
+            del registry._branches[branch.branch_id]
+            app_branch_age_seconds.remove(branch.branch_id)
+            app_token_generation_rate.remove(branch.branch_id)
+            logger.debug(f"Unregistered branch: {branch.branch_id}")
+    
+    @classmethod
+    def get_branch(cls, branch_id: str) -> Optional[BranchTracker]:
+        """Get a branch by ID"""
+        registry = cls()
+        return registry._branches.get(branch_id)
+    
+    @classmethod
+    def get_all_branches(cls) -> List[BranchTracker]:
+        """Get all branches"""
+        registry = cls()
+        return list(registry._branches.values())
+    
+    @classmethod
+    def get_active_branches(cls) -> List[BranchTracker]:
+        """Get all active branches"""
+        registry = cls()
+        return [branch for branch in registry._branches.values() if branch.status == "RUNNING"]
+    
+    def _start_metrics_server(self, port: int = 8000):
+        """Start Prometheus metrics server in a separate thread"""
+        if not self._metrics_server_started:
+            def start_server():
+                start_http_server(port)
+                logger.info(f"Prometheus metrics server started on port {port}")
+            
+            self._metrics_thread = threading.Thread(target=start_server, daemon=True)
+            self._metrics_thread.start()
+            self._metrics_server_started = True
+    
+    def _start_metrics_update(self):
+        """Start periodic metrics update thread"""
+        def update_metrics():
+            while not self._stop_event.is_set():
+                self._update_metrics()
+                time.sleep(1)  # Update every second
+        
+        self._update_thread = threading.Thread(target=update_metrics, daemon=True)
+        self._update_thread.start()
+    
+    def _update_metrics(self):
+        """Update all Prometheus metrics based on current branch state"""
+        active_branches = self.get_active_branches()
+        
+        # Update primary metrics
+        app_active_branches.set(len(active_branches))
+        
+        # Calculate theoretical token load
+        theoretical_load = sum(branch.total_tokens for branch in active_branches)
+        app_theoretical_token_load.set(theoretical_load)
+        
+        # Update secondary metrics
+        for branch in active_branches:
+            age = branch.get_age()
+            app_branch_age_seconds.labels(branch_id=branch.branch_id).set(age)
+    
+    @classmethod
+    def start_metrics_server(cls, port: int = 8000):
+        """Start Prometheus metrics server"""
+        registry = cls()
+        registry._start_metrics_server(port)
+
+
+# Initialize registry
+branch_registry = BranchRegistry()
 
 
 def select_env(ability, config, extra_info=None):
@@ -174,6 +362,10 @@ class CallLLM:  # Call policy LLM in RL env
             return None
 
         uid = kwargs.pop('uid', self.meta_info.get('uid', None))
+        branch_id = kwargs.pop('branch_id', None)
+        
+        # Generate vllm_req_id for tracking
+        vllm_req_id = f"vllm_{uuid.uuid4().hex[:12]}"
 
         request_data = {
             "model": "rollout",
@@ -183,7 +375,7 @@ class CallLLM:  # Call policy LLM in RL env
             "temperature": generation_kwargs['temperature'],
             "max_tokens": max_tokens,
             "max_length": max_len,
-            "meta_info": self.meta_info | {'uid': uid},
+            "meta_info": self.meta_info | {'uid': uid, 'branch_id': branch_id, 'vllm_req_id': vllm_req_id},
         }
 
         import asyncio
@@ -198,6 +390,11 @@ class CallLLM:  # Call policy LLM in RL env
                                         timeout=timeout) as response:
                     completion = await response.json()
                     completion['choices'][0]['message']['extra_data']['input_ids'] = input_ids
+                    # Add vllm_req_id to extra_data for tracking
+                    completion['choices'][0]['message']['extra_data']['vllm_req_id'] = vllm_req_id
+                    # Also include branch_id in extra_data if provided
+                    if branch_id:
+                        completion['choices'][0]['message']['extra_data']['branch_id'] = branch_id
                     assert response.status == 200, f"chat_completions failed msg: {completion}"
                     await session.close()
                     return completion
@@ -232,6 +429,14 @@ class CallLLM:  # Call policy LLM in RL env
                 completion["choices"][0]["message"]["response_log_probs"] = [0.0] * len(text_ids)
         else:
             completion = await self._create_completion(input_ids, **kwargs)
+        
+        # Add branch_id to extra_data if completion is successful and not already present
+        if completion is not None and "branch_id" in kwargs:
+            if "extra_data" not in completion["choices"][0]["message"]:
+                completion["choices"][0]["message"]["extra_data"] = {}
+            if "branch_id" not in completion["choices"][0]["message"]["extra_data"]:
+                completion["choices"][0]["message"]["extra_data"]["branch_id"] = kwargs["branch_id"]
+        
         return completion
 
 class CallAPI:  # Call external API
@@ -256,6 +461,12 @@ class CallAPI:  # Call external API
         if 'max_new_tokens' in kwargs:
             max_tokens = min(max_tokens, kwargs.pop('max_new_tokens'))
 
+        # Extract branch_id for tracking
+        branch_id = kwargs.pop('branch_id', None)
+        
+        # Generate vllm_req_id equivalent for API calls
+        vllm_req_id = f"callapi_{uuid.uuid4().hex[:12]}"
+
         if max_tokens < 10:
             return None
         messages = kwargs.get('messages') or decode_conversation(input_ids, self.tokenizer)[0]
@@ -265,7 +476,8 @@ class CallAPI:  # Call external API
             "model": self.model,
             "messages": messages[:2],  # Log first 2 messages to avoid too much verbosity
             "max_completion_tokens": max_tokens,
-            "request_id": f"callapi_{uuid.uuid4().hex[:8]}"
+            "request_id": vllm_req_id,
+            "branch_id": branch_id
         }
         logger.debug(f"[CallAPI Request] URL: {self.client.base_url if hasattr(self.client, 'base_url') else 'https://api.openai.com/v1'}, Request: {json.dumps(request_data, ensure_ascii=False)}")
 
@@ -301,7 +513,11 @@ class CallAPI:  # Call external API
                             "content": text,
                             "raw_output_ids": text_ids,
                             "response_log_probs": [0.0] * len(text_ids),
-                            "extra_data": {"input_ids": input_ids},
+                            "extra_data": {
+                                "input_ids": input_ids,
+                                "vllm_req_id": vllm_req_id,
+                                "branch_id": branch_id
+                            },
                             "metrics": {"usage": {
                                 "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
                                 "completion_tokens": response.usage.completion_tokens if response.usage else len(text_ids),
@@ -487,31 +703,60 @@ class AgentContext:
 
 class Agent(AgentContext):
     # Agent utils
-    def __init__(self, llm_client, conversations, tokenizer, config, prompt_turn=2):
+    def __init__(self, llm_client, conversations, tokenizer, config, prompt_turn=2, branch_id=None, parent_id=None):
         super().__init__(conversations, tokenizer, config, prompt_turn=prompt_turn)
         self.llm_client = llm_client
         self.retry_cjk = getattr(config.plugin, "retry_cjk", 0)
         self.info_cache = {}
+        
+        # Initialize branch tracker
+        self.branch_id = branch_id or str(uuid.uuid4())
+        self.branch_tracker = BranchTracker(
+            branch_id=self.branch_id,
+            parent_id=parent_id,
+            prompt_messages=conversations,
+            tokenizer=tokenizer
+        )
 
     async def step(self, max_new_tokens=None, retry_cjk=0):
         prompt = self.context()
         max_len = self.prompt_ids_len + self.config.response_length
         if max_new_tokens is not None:
             max_len = min(len(prompt) + max_new_tokens, 131072)
+        
+        # Create completion and pass branch_id for tracking
         completion = await self.llm_client.create_completion(
-            prompt, uid=self.context_uid, max_len=max_len, messages=self.chat)
+            prompt, uid=self.context_uid, max_len=max_len, messages=self.chat, branch_id=self.branch_id)
+            
         if completion is None:
             return None
+        
+        # Update vllm_req_id if available in completion
+        if "extra_data" in completion.get("choices", [{}])[0].get("message", {}):
+            extra_data = completion["choices"][0]["message"]["extra_data"]
+            if "vllm_req_id" in extra_data:
+                self.branch_tracker.update_vllm_req_id(extra_data["vllm_req_id"])
+        
+        # Retry if response is weird
         if max(self.retry_cjk, retry_cjk):
             if is_weird(completion["choices"][0]["message"]["content"]):
                 for _ in range(int(max(self.retry_cjk, retry_cjk))):
                     completion = await self.llm_client.create_completion(
-                        prompt, uid=self.context_uid, max_len=max_len, messages=self.chat)
+                        prompt, uid=self.context_uid, max_len=max_len, messages=self.chat, branch_id=self.branch_id)
                     if is_weird(completion["choices"][0]["message"]["content"]):
                         continue
                     else:
                         break
+        
+        # Extract response and update token count
         response = completion["choices"][0]["message"]["content"]
+        completion_tokens = completion["choices"][0]["message"]["raw_output_ids"]
+        num_tokens_generated = len(completion_tokens)
+        
+        # Update branch tracker with generated tokens
+        self.branch_tracker.increment_gen_len(num_tokens_generated)
+        
+        # Append to conversation history
         self.append({'role': 'assistant', 'content': response}, completion)
         return response
 
@@ -585,6 +830,14 @@ class Agent(AgentContext):
 
     def set_cache(self, key, value):
         self.info_cache[key] = value
+    
+    def complete_branch(self):
+        """Mark branch as completed"""
+        self.branch_tracker.update_status("COMPLETED")
+    
+    def prune_branch(self):
+        """Mark branch as pruned"""
+        self.branch_tracker.update_status("PRUNED")
 
 
 @dataclass

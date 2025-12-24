@@ -29,11 +29,9 @@ spec:
           limits:
             memory: 500Mi
             cpu: "500m"
-            nvidia.com/gpu: 1
           requests:
             memory: 500Mi
             cpu: "500m"
-            nvidia.com/gpu: 1
         volumeMounts:
         - name: nvidia-libs
           mountPath: /usr/local/nvidia/lib
@@ -45,6 +43,7 @@ spec:
           value: ":9400"
         - name: DCGM_EXPORTER_KUBERNETES
           value: "true"
+
       - name: local-llm
         image:  harbor.xa.xshixun.com:7443/hanfeigeng/vllm/vllm-openai:v0.10.2-linux-amd64
         #command: ["sleep", "infinity"]
@@ -57,7 +56,7 @@ spec:
           
           # Start vllm server
           echo "Starting vllm server..."
-          vllm serve ByteDance-Seed/Seed-OSS-36B-Instruct --port 8080 --max-model-len 131072
+          k
         ports:
         - containerPort: 8080
         env:

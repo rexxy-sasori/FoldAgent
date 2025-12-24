@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from verl import DataProto
-from .utils import CallLLM, Agent, select_env, truncate_text, is_weird, TaskContext, CallAPI, run_action
+from .utils import CallLLM, Agent, select_env, truncate_text, is_weird, TaskContext, CallAPI, run_action, BranchRegistry
 from .prompts import create_chat
 from .prompts import BRANCH_MESSAGE_SEARCH, BRANCH_MESSAGE, SUMMARY_PROMPT_CODE, SUMMARY_PROMPT_SEARCH
 from .verifier import judge_scope
@@ -64,6 +64,9 @@ async def process_item(
     if not is_train:
         if getattr(config.plugin, "val_response_length", None):
             config.response_length = getattr(config.plugin, "val_response_length", None)
+    
+    # Start metrics server if not already started
+    BranchRegistry.start_metrics_server()
 
     ability = item.non_tensor_batch['ability'][0]
 
@@ -103,7 +106,19 @@ async def process_item(
 
     prompt_turn = len(user_prompt)
     agent = dict()
-    agent['main'] = Agent(llm_client, user_prompt, tokenizer, config, prompt_turn=prompt_turn)
+    
+    # Create main agent with branch tracking - use instance uid for unique main branch ID
+    instance_uid = item.non_tensor_batch.get('uid', ['unknown'])[0]
+    main_branch_id = f"main_{instance_uid}"
+    agent['main'] = Agent(
+        llm_client, 
+        user_prompt, 
+        tokenizer, 
+        config, 
+        prompt_turn=prompt_turn,
+        branch_id=main_branch_id
+    )
+    
     branches = []
     branch_tasks = {}
     branch_return = {}
@@ -166,7 +181,18 @@ async def process_item(
                 branches.append(agent_name)
                 branch_tasks[agent_name] = message_to_branch
                 history = agent['main'].messages()
-                agent[agent_name] = Agent(llm_client, history, tokenizer, config, prompt_turn=prompt_turn)
+                
+                # Create branch agent with parent ID pointing to main branch
+                agent[agent_name] = Agent(
+                    llm_client, 
+                    history, 
+                    tokenizer, 
+                    config, 
+                    prompt_turn=prompt_turn,
+                    branch_id=agent_name,
+                    parent_id=main_branch_id
+                )
+                
                 branch_prompt_formatted = branch_prompt.format(message=message_to_branch)
                 agent[agent_name].append({'role': 'user', 'content': branch_prompt_formatted})
                 agent_return = await agent[agent_name].react(
@@ -197,6 +223,8 @@ async def process_item(
                     branch_message = f'Branch has finished its task. The last message was:\n\n{clean_response(last_response)}'
                 observation = branch_message
                 branch_return[agent_name] = observation
+                # Mark branch as completed after it finishes its task
+                agent[agent_name].complete_branch()
                 # print(observation)
         else:
             observation = await run_action(env, response)
@@ -359,6 +387,9 @@ async def process_item(
         idx = [0] + sorted(random.sample(range(1, len(outs)), k=max_traj - 1))
         outs = [outs[i] for i in idx]
 
+    # Mark main branch as completed at the end of the process
+    agent['main'].complete_branch()
+    
     try:
         res = DataProto.concat(outs)
         return res

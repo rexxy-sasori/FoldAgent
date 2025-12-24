@@ -15,7 +15,10 @@ spec:
     spec:
       containers:
       - name: foldagent-eval
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:v0.33
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:v0.36
+        ports:
+        - containerPort: 8000
+          name: metrics
         # command: ["sleep", "infinity"]
         # Uncomment below to run evaluation automatically
         command: ["bash", "-c"]

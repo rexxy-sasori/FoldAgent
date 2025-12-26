@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: foldagent-eval
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:v0.36
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:v0.41
         ports:
         - containerPort: 8000
           name: metrics
@@ -74,6 +74,11 @@ spec:
           value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
         - name: HF_ENDPOINT
           value: "https://hf-mirror.com"
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token-secret
+              key: HF_TOKEN
         - name: http_proxy
           value: "http://192.168.3.226:7890"
         - name: https_proxy

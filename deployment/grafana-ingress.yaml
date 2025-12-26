@@ -5,19 +5,35 @@ metadata:
   namespace: liuyunxin
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+    nginx.ingress.kubernetes.io/use-regex: "true"
 spec:
   ingressClassName: nginx
   rules:
     - host: grafana-liuyunxin.xa.xshixun.cn
       http:
         paths:
-          - backend:
+          - path: /victoria-metrics/(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: victoria-metrics
+                port:
+                  number: 8428
+          - path: /local-llm/(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: local-llm
+                port:
+                  number: 8080
+          - path: /(.*)
+            pathType: Prefix
+            backend:
               service:
                 name: grafana
                 port:
                   number: 3000
-            path: /
-            pathType: Prefix
   tls:
     - hosts:
         - grafana-liuyunxin.xa.xshixun.cn

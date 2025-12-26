@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: download-model-nousresearch-hermes-3-llama-3.1-8b
+  namespace: liuyunxin
+spec:
+  containers:
+  - name: download-model
+    image: harbor.xa.xshixun.com:7443/hanfeigeng/vllm/vllm-openai:v0.10.2-linux-amd64
+    command:
+    - bash
+    - -c
+    args:
+    - "set -e\n# Install huggingface_hub if not already installed\necho \"Installing\
+      \ huggingface_hub...\"\npip install -U huggingface_hub==0.36.0\n\n# Create cache\
+      \ directory if it doesn't exist\nmkdir -p /root/.cache/huggingface\n\n# Download\
+      \ the model\necho \"Downloading model NousResearch/Hermes-3-Llama-3.1-8B using\
+      \ HF mirror...\"\nhuggingface-cli download --resume-download --local-dir-use-symlinks\
+      \ False NousResearch/Hermes-3-Llama-3.1-8B\n\n# Verify the download\necho \"\
+      \\nVerifying model download...\"\nMODEL_DIR=\"/root/.cache/huggingface/hub/models--NousResearch--Hermes-3-Llama-3.1-8B\"\
+      \nif [ -d \"$MODEL_DIR\" ]; then\n  echo \"\u2705 Model directory exists: $MODEL_DIR\"\
+      \n  echo \"Number of files downloaded: $(find $MODEL_DIR -type f | wc -l)\"\n\
+      \  echo \"\\nListing model files:\"\n  ls -la $MODEL_DIR\nelse\n  echo \"\u274C\
+      \ Model directory not found\"\n  exit 1\nfi\n\n# Keep the pod running for inspection\n\
+      echo \"\\nModel download completed successfully!\"\necho \"Pod will sleep indefinitely\
+      \ for further inspection.\"\nsleep infinity"
+    volumeMounts:
+    - name: gpfshome
+      mountPath: /root
+    env:
+    - name: CUDA_VISIBLE_DEVICES
+      value: '0'
+    - name: http_proxy
+      value: http://192.168.3.226:7890
+    - name: https_proxy
+      value: http://192.168.3.226:7890
+    - name: HTTP_PROXY
+      value: http://192.168.3.226:7890
+    - name: HTTPS_PROXY
+      value: http://192.168.3.226:7890
+    - name: NO_PROXY
+      value: 127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin
+    - name: no_proxy
+      value: 127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin
+    - name: APT_PROXY
+      value: http://192.168.3.241:3142
+    - name: PIP_INDEX_URL
+      value: http://192.168.12.70:9181/repository/pypi-proxy/simple/
+    - name: PIP_TRUSTED_HOST
+      value: 192.168.12.70
+    - name: HF_ENDPOINT
+      value: https://hf-mirror.com
+    resources:
+      limits:
+        memory: 64Gi
+        cpu: '32'
+      requests:
+        memory: 32Gi
+        cpu: '16'
+  volumes:
+  - name: gpfshome
+    persistentVolumeClaim:
+      claimName: pvc-gpfshome-liuyunxin

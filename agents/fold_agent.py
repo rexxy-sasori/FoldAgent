@@ -171,23 +171,22 @@ async def process_item(
             else:
                 description = fn_call['arguments'].get('description', 'Agent')
                 message_to_branch = fn_call['arguments'].get('prompt', 'Empty prompt')
+                
+                # Setup Agent
                 branch_count = len(branches)
                 agent_name = f"#{branch_count}-" + description.replace(' ', '_')
-                context_length = len(agent['main'].context())
-                # Enhanced logging with more details
-                logger.info(f'[BRANCH] {description} | Agent: {agent_name} | Context length: {context_length} | Branch count: {branch_count + 1}')
-                logger.debug('[BRANCH] %s %d', description, len(agent['main'].context()))
-                # print(message_to_branch)
+                logger.info(f'[BRANCH START] {description} | ID: {agent_name}')
+                
                 branches.append(agent_name)
                 branch_tasks[agent_name] = message_to_branch
                 history = agent['main'].messages()
                 
-                # Create branch agent with parent ID pointing to main branch
+                # Create branch agent
                 agent[agent_name] = Agent(
-                    llm_client, 
-                    history, 
-                    tokenizer, 
-                    config, 
+                    llm_client,
+                    history,
+                    tokenizer,
+                    config,
                     prompt_turn=prompt_turn,
                     branch_id=agent_name,
                     parent_id=main_branch_id
@@ -195,37 +194,60 @@ async def process_item(
                 
                 branch_prompt_formatted = branch_prompt.format(message=message_to_branch)
                 agent[agent_name].append({'role': 'user', 'content': branch_prompt_formatted})
-                agent_return = await agent[agent_name].react(
-                    partial(run_action, env),
-                    max_turn=max_turn,
-                    max_tokens=getattr(config.plugin, "branch_len", None),
-                    session_timeout=session_timeout - time.time() + session_start_time,
-                    should_continue=lambda resp: '<function=return>' not in resp,
-                    safe_finish=lambda
-                        x: "You are in branch mode and cannot branch task or finish the task. Use the `return` tool to go back to the main agent." if '<function=finish>' in x or '<function=branch>' in x else None,
-                    summary_prompt="The context limit has been exceeded for the branch. Please finish the sub task directly and clearly state the progress made and the pending jobs of the sub task. Only summarize the sub task progress, using the return tool.",
-                    observation_prompt=f"* You are now in branch mode: {description}. Conduct the sub task based on instruction, and when you complete the assigned sub task, use return tool to return, do not perform action beyond the assigned sub task.",
-                )
-                iteration += agent_return['iteration']
-                last_response = agent_return['last_response']
-                session_message.extend(agent[agent_name].messages()[len(history):])
-                fn_call = extract_fn_call(last_response)
-                branch_message = None
-                if fn_call is not None and fn_call['function'] == 'return':
-                    if 'message' in fn_call['arguments']:
+                
+                # --- FIX STARTS HERE ---
+                # 1. Define strict local timeout (default to 5 mins if not config'd)
+                branch_timeout = getattr(config.plugin, "branch_timeout", 300)
+                
+                try:
+                    # 2. Run with asyncio.wait_for to enforce timeout
+                    agent_return = await asyncio.wait_for(
+                        agent[agent_name].react(
+                            partial(run_action, env),
+                            max_turn=max_turn,
+                            max_tokens=getattr(config.plugin, "branch_len", None),
+                            session_timeout=branch_timeout, # Pass local timeout to agent
+                            should_continue=lambda resp: '<function=return>' not in resp,
+                            safe_finish=lambda x: "You are in branch mode..." if '<function=finish>' in x or '<function=branch>' in x else None,
+                            summary_prompt="The context limit has been exceeded...",
+                            observation_prompt=f"* You are now in branch mode: {description}...",
+                        ),
+                        timeout=branch_timeout + 10 # Safety buffer
+                    )
+                    
+                    # Process Success
+                    iteration += agent_return['iteration']
+                    last_response = agent_return['last_response']
+                    session_message.extend(agent[agent_name].messages()[len(history):])
+                    
+                    # Extract Return Message
+                    fn_call = extract_fn_call(last_response)
+                    branch_message = None
+                    if fn_call and fn_call['function'] in ['return', 'finish']:
                         branch_message = fn_call['arguments'].get('message', 'Empty message')
                         branch_message = f'Branch has finished its task, the returned message is:\n\n{branch_message}'
-                elif fn_call is not None and fn_call['function'] == 'finish':
-                    if 'message' in fn_call['arguments']:
-                        branch_message = fn_call['arguments'].get('message', 'Empty message')
-                        branch_message = f'Branch has finished its task, the returned message is:\n\n{branch_message}'
-                if branch_message is None:
-                    branch_message = f'Branch has finished its task. The last message was:\n\n{clean_response(last_response)}'
-                observation = branch_message
-                branch_return[agent_name] = observation
-                # Mark branch as completed after it finishes its task
-                agent[agent_name].complete_branch()
-                # print(observation)
+                    
+                    if branch_message is None:
+                        branch_message = f'Branch has finished its task. The last message was:\n\n{clean_response(last_response)}'
+                    
+                    observation = branch_message
+                    branch_return[agent_name] = observation
+
+                except asyncio.TimeoutError:
+                    logger.warning(f'[BRANCH TIMEOUT] Agent {agent_name} took longer than {branch_timeout}s')
+                    observation = "The branch timed out without returning a result."
+                    branch_return[agent_name] = observation
+                    
+                except Exception as e:
+                    logger.error(f'[BRANCH CRASH] Agent {agent_name} failed: {str(e)}')
+                    observation = f"The branch crashed: {str(e)}"
+                    branch_return[agent_name] = observation
+                    
+                finally:
+                    # 3. CRITICAL: GUARANTEE CLEANUP
+                    # This ensures vLLM frees memory even if the branch stalled/crashed
+                    if hasattr(agent[agent_name], 'complete_branch'):
+                        agent[agent_name].complete_branch()
         else:
             observation = await run_action(env, response)
             if observation is None:
@@ -346,8 +368,10 @@ async def process_item(
                                         agent[name].set_cache('reward', -1)
                                     should_drop = False
                             if should_drop:
+                                agent[name].prune_branch()
                                 agent.pop(name)
                         else:
+                            agent[name].prune_branch()
                             agent.pop(name)  # drop all branch if not finish (overlong mask)
             # Scope check + reward
             if 'reward_scope' in process_reward:

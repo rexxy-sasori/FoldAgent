@@ -56,7 +56,16 @@ spec:
           
           # Start vllm server
           echo "Starting vllm server..."
-          vllm serve ByteDance-Seed/Seed-OSS-36B-Instruct --port 8080 --max-model-len 131072 --enable-prefix-caching --enable-chunked-prefill --kv-cache-metrics-sample 1
+          vllm serve ByteDance-Seed/Seed-OSS-36B-Instruct \
+          --port 8080 \
+          --max-model-len 131072 \
+          --enable-prefix-caching \
+          --enable-chunked-prefill \
+          --max-num-seqs 512 \
+          --max-num-batched-tokens 32768 \
+          --gpu-memory-utilization 0.85 \
+          --kv-cache-metrics \
+          --kv-cache-metrics-sample 1.0
         ports:
         - containerPort: 8080
         env:
@@ -115,4 +124,18 @@ spec:
   ports:
   - port: 8080
     targetPort: 8080
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: local-llm-dcgm-exporter
+  namespace: liuyunxin
+spec:
+  selector:
+    app: local-llm
+  ports:
+  - port: 9400
+    targetPort: 9400
   type: ClusterIP

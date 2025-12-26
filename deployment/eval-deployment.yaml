@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: foldagent-eval
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:v0.41
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:v0.42-fix-zombie-branch-v1
         ports:
         - containerPort: 8000
           name: metrics

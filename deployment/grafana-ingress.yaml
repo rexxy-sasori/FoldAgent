@@ -7,6 +7,7 @@ metadata:
     cert-manager.io/cluster-issuer: letsencrypt-prod
     nginx.ingress.kubernetes.io/rewrite-target: /$1
     nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
 spec:
   ingressClassName: nginx
   rules:
@@ -27,6 +28,13 @@ spec:
                 name: local-llm
                 port:
                   number: 8080
+          - path: /dcgm/(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: local-llm-dcgm-exporter
+                port:
+                  number: 9400
           - path: /(.*)
             pathType: Prefix
             backend:

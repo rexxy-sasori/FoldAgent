@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: jaeger-dedicated
+  namespace: liuyunxin
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # IMPORTANT: Notice there is NO rewrite-target annotation here
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - grafana-liuyunxin.xa.xshixun.cn
+      secretName: grafana-liuyunxin.xa.xshixun.cn-tls
+  rules:
+    - host: grafana-liuyunxin.xa.xshixun.cn
+      http:
+        paths:
+          - path: /jaeger
+            pathType: Prefix # This passes /jaeger/... directly to the pod
+            backend:
+              service:
+                name: jaeger
+                port:
+                  number: 16686

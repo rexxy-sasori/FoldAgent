@@ -34,7 +34,14 @@ spec:
               service:
                 name: local-llm-dcgm-exporter
                 port:
-                  number: 9400
+                  number: 9400                
+          - path: /elasticsearch/(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: elasticsearch
+                port:
+                  number: 9200
           - path: /(.*)
             pathType: Prefix
             backend:

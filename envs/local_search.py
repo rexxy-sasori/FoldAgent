@@ -1,4 +1,5 @@
 import os
+import time
 import copy
 import collections
 import difflib
@@ -185,8 +186,15 @@ async def call_openai(messages, model='gpt-3.5-turbo', max_retries=3, is_judge=F
     
     for attempt in range(max_retries):
         try:
-            logger.debug(f"[OPENAI API{' (JUDGE)' if is_judge else ''}] POST request to {openai_url}, model: {model}")
-            logger.debug(f"[OPENAI API{' (JUDGE)' if is_judge else ''}] Request messages: {json.dumps(messages[:1])}... (truncated)")
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            request_content = {
+                "timestamp": timestamp,
+                "url": openai_url,
+                "model": model,
+                "messages": messages,
+                "attempt": attempt + 1
+            }
+            logger.debug(f"[OPENAI API{' (JUDGE)' if is_judge else ''}] Full request: {json.dumps(request_content)}")
             
             async with httpx.AsyncClient(timeout=300.0) as c:
                 headers = {}
@@ -232,8 +240,15 @@ async def call_openai_raw(messages, model='gpt-3.5-turbo', max_retries=3, is_jud
     
     for attempt in range(max_retries):
         try:
-            logger.debug(f"[OPENAI RAW API{' (JUDGE)' if is_judge else ''}] Request to {base_url}, model: {model}")
-            logger.debug(f"[OPENAI RAW API{' (JUDGE)' if is_judge else ''}] Request messages: {json.dumps(messages[:1])}... (truncated)")
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            request_content = {
+                "timestamp": timestamp,
+                "url": base_url,
+                "model": model,
+                "messages": messages,
+                "attempt": attempt + 1
+            }
+            logger.debug(f"[OPENAI RAW API{' (JUDGE)' if is_judge else ''}] Full request: {json.dumps(request_content)}")
             
             resp = await client.chat.completions.create(model=model, messages=messages)
             

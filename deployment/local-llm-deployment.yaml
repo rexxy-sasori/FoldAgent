@@ -45,7 +45,7 @@ spec:
           value: "true"
 
       - name: local-llm
-        image:  harbor.xa.xshixun.com:7443/hanfeigeng/vllm/vllm-openai:v0.13.0-linux-amd64
+        image:  harbor.xa.xshixun.com:7443/hanfeigeng/vllm/vllm-openai:v0.13.0-linux-amd64-otel
         #command: ["sleep", "infinity"]
         command: ["bash", "-c"]
         args:
@@ -58,14 +58,28 @@ spec:
           echo "Starting vllm server..."
           vllm serve ByteDance-Seed/Seed-OSS-36B-Instruct \
           --port 8080 \
+          --otlp-traces-endpoint jaeger:4317 \
           --max-model-len 131072 \
           --enable-prefix-caching \
           --enable-chunked-prefill \
-          --max-num-seqs 512 \
-          --max-num-batched-tokens 32768 \
-          --gpu-memory-utilization 0.85 \
+          --enforce-eager \
+          --gpu-memory-utilization 0.95 \
           --kv-cache-metrics \
-          --kv-cache-metrics-sample 1.0
+          --kv-cache-metrics-sample 1.0 \
+          --collect-detailed-traces worker 
+
+          # vllm serve ByteDance-Seed/Seed-OSS-36B-Instruct \
+          # --port 8080 \
+          # --otlp-traces-endpoint jaeger:4317 \
+          # --max-model-len 131072 \
+          # --enable-chunked-prefill \
+          # --enable-prefix-caching  \
+          # --max-num-seqs 64 \
+          # --max-num-batched-tokens 1310720 \
+          # --gpu-memory-utilization 0.85 \
+          # --kv-cache-metrics \
+          # --kv-cache-metrics-sample 1.0 \
+          # --collect-detailed-traces worker
         ports:
         - containerPort: 8080
         env:
@@ -87,10 +101,27 @@ spec:
           value: "192.168.12.70"
         - name: HF_ENDPOINT
           value: "https://hf-mirror.com"
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token-secret
+              key: HF_TOKEN
         - name: NO_PROXY
-          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin,jaeger"
         - name: no_proxy
-          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin,jaeger"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://jaeger.liuyunxin:4317"  # Points to your Jaeger Service
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "grpc"
+        - name: OTEL_SERVICE_NAME
+          value: "vllm-seed-36b"      # This name will appear in the Jaeger UI
+        - name: OTEL_TRACES_EXPORTER
+          value: "otlp"
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          value: "true"
+        - name: OTEL_EXPORTER_OTLP_TRACES_INSECURE
+          value: "true"
         resources:
           limits:
             nvidia.com/gpu: 1

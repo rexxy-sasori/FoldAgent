@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from datetime import datetime
 from tqdm import tqdm
+import os
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -20,9 +21,13 @@ run_dir = Path('/root') / run_timestamp
 run_dir.mkdir(parents=True, exist_ok=True)
 log_filename = run_dir / f'eval_bc.log'
 
+# Read logging configuration from environment variables
+log_level = os.environ.get('LOG_LEVEL', 'DEBUG').upper()
+log_format = os.environ.get('LOG_FORMAT', f'%(asctime)s - {run_id} - %(name)s - %(levelname)s - %(message)s')
+
 logging.basicConfig(
-    level=logging.INFO,
-    format=f'%(asctime)s - {run_id} - %(name)s - %(levelname)s - %(message)s',
+    level=getattr(logging, log_level, logging.DEBUG),
+    format=log_format,
     handlers=[
         logging.StreamHandler(sys.stdout),
         logging.FileHandler(str(log_filename))

@@ -28,6 +28,13 @@ spec:
                 name: local-llm
                 port:
                   number: 8080
+          - path: /sglang/(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: sglang
+                port:
+                  number: 8080
           - path: /dcgm/(.*)
             pathType: ImplementationSpecific
             backend:

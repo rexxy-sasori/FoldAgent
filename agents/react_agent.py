@@ -48,7 +48,7 @@ async def process_item(
     max_turn = agent_config.get("max_turn", 64)
     host = context.server_host
     port = context.server_port
-    llm_client = LLMClass(host, port, tokenizer, config, meta_info=agent_config.get("meta_info", {}))
+    llm_client = LLMClass(host, port, tokenizer, config, meta_info=agent_config.get("meta_info", {}), agent_type="react_agent")
     prompt_turn = len(user_prompt)
 
     agent = Agent(llm_client, user_prompt, tokenizer, config, prompt_turn=prompt_turn)

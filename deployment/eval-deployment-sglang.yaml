@@ -1,20 +1,20 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: foldagent-eval-deployment
+  name: foldagent-eval-deployment-sglang
   namespace: liuyunxin
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: foldagent-eval
+      app: foldagent-eval-sglang
   template:
     metadata:
       labels:
-        app: foldagent-eval
+        app: foldagent-eval-sglang
     spec:
       containers:
-      - name: foldagent-eval
+      - name: foldagent-eval-sglang
         image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.46-log-llmbackend
         ports:
         - containerPort: 8000
@@ -25,7 +25,7 @@ spec:
         args:
           - >
             python3 scripts/eval_bc.py
-            --workflow search_branch
+            --workflow search
             --model_name ByteDance-Seed/Seed-OSS-36B-Instruct
             --local_search_url http://search-server.liuyunxin:8000
             --data_path /app/data/bc_test.parquet
@@ -52,9 +52,9 @@ spec:
               name: foldagent-eval-secrets
               key: openai-api-key
         - name: OPENAI_BASE_URL
-          value: "http://local-llm.liuyunxin:8080/v1"
+          value: "http://sglang.liuyunxin:8080/v1"
         - name: OPENAI_URL
-          value: "http://local-llm.liuyunxin:8080/v1/chat/completions"
+          value: "http://sglang.liuyunxin:8080/v1/chat/completions"
         - name: JUDGE_OPENAI_API_KEY
           valueFrom:
             secretKeyRef:

@@ -15,7 +15,7 @@ RUN pip3 install ./external/verl
 
 # Install additional Python dependencies
 RUN pip3 install fastapi uvicorn transformers numpy pandas tqdm omegaconf torch huggingface_hub==0.36.0 
-RUN pip3 install flash-attn --no-isolation 
+RUN pip3 install flash-attn --no-build-isolation 
 
 # Clean up unnecessary files after installation
 # RUN rm -rf /app/external/verl \

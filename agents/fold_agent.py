@@ -99,7 +99,7 @@ async def process_item(
     host = context.server_host
     port = context.server_port
 
-    llm_client = LLMClass(host, port, tokenizer, config, meta_info=agent_config.get("meta_info", {}))
+    llm_client = LLMClass(host, port, tokenizer, config, meta_info=agent_config.get("meta_info", {}), agent_type="fold_agent")
 
     prompt_turn = len(user_prompt)
     agent = dict()
@@ -189,12 +189,21 @@ async def process_item(
                     if 'message' in fn_call['arguments']:
                         branch_message = fn_call['arguments'].get('message', 'Empty message')
                         branch_message = f'Branch has finished its task, the returned message is:\n\n{branch_message}'
+                    # Enhanced logging for return tool calls
+                    logger.info(f'[RETURN] {description} | Agent: {agent_name} | Context length: {len(agent[agent_name].context())}')
+                    logger.debug(f'[RETURN] Return message: {branch_message}' if branch_message else f'[RETURN] Return without message')
                 elif fn_call is not None and fn_call['function'] == 'finish':
                     if 'message' in fn_call['arguments']:
                         branch_message = fn_call['arguments'].get('message', 'Empty message')
                         branch_message = f'Branch has finished its task, the returned message is:\n\n{branch_message}'
+                    # Enhanced logging for finish function (also treated as branch return)
+                    logger.info(f'[RETURN] {description} | Agent: {agent_name} | Context length: {len(agent[agent_name].context())}')
+                    logger.debug(f'[RETURN] Return message (via finish): {branch_message}' if branch_message else f'[RETURN] Return without message (via finish)')
                 if branch_message is None:
                     branch_message = f'Branch has finished its task. The last message was:\n\n{clean_response(last_response)}'
+                    # Enhanced logging for implicit return (no explicit return/finish call)
+                    logger.info(f'[RETURN] {description} | Agent: {agent_name} | Context length: {len(agent[agent_name].context())}')
+                    logger.debug(f'[RETURN] Implicit return without explicit function call')
                 observation = branch_message
                 branch_return[agent_name] = observation
                 # print(observation)

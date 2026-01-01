@@ -1,0 +1,16 @@
+# Start from the specified base image
+FROM harbor.xa.xshixun.com:7443/hanfeigeng/vllm/vllm-openai:v0.13.0-linux-amd64
+
+# Define environments
+ENV PIP_ROOT_USER_ACTION=ignore
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install opentelemetry dependencies as specified
+RUN pip install --no-cache-dir \
+    'opentelemetry-sdk>=1.26.0,<1.27.0' \
+    'opentelemetry-api>=1.26.0,<1.27.0' \
+    'opentelemetry-exporter-otlp>=1.26.0,<1.27.0' \
+    'opentelemetry-semantic-conventions-ai>=0.4.1,<0.5.0'
+
+# Set default command (if needed)
+# CMD ["python", "-m", "vllm.entrypoints.openai.api_server", "--model", "your-model-name"]

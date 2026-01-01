@@ -154,7 +154,7 @@ def is_weird(text, repeat_n=128, cjk_limit=128):
 
 
 class CallLLM:  # Call policy LLM in RL env
-    def __init__(self, host, port, tokenizer, config, meta_info):
+    def __init__(self, host, port, tokenizer, config, meta_info, agent_type="unknown"):
         if ':' in host:
             host = f'[{host}]'
         url = f"http://{host}:{port}/chat/completions"
@@ -164,6 +164,7 @@ class CallLLM:  # Call policy LLM in RL env
         self.config = config
         self.meta_info = meta_info
         self.call_openai = getattr(config.plugin, "call_openai", None)
+        self.agent_type = agent_type
 
     async def _create_completion(self, input_ids, **kwargs):
         generation_kwargs = self.meta_info['generation_kwargs']
@@ -197,6 +198,17 @@ class CallLLM:  # Call policy LLM in RL env
 
         for attempt in range(10):
             try:
+                # Log request details with timestamp and current attempt number
+                timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                log_request_data = {
+                    "timestamp": timestamp,
+                    "url": self.url,
+                    "model": "rollout",
+                    "request_data": request_data,
+                    "attempt": attempt + 1,
+                    "agent_type": self.agent_type
+                }
+                logger.debug(f"[CallLLM API ({self.agent_type})] Full request: {json.dumps(log_request_data)}")
                 timeout = aiohttp.ClientTimeout(total=9600)
                 session = aiohttp.ClientSession(timeout=timeout)
                 async with session.post(url=self.url,
@@ -206,11 +218,14 @@ class CallLLM:  # Call policy LLM in RL env
                     completion = await response.json()
                     completion['choices'][0]['message']['extra_data']['input_ids'] = input_ids
                     assert response.status == 200, f"chat_completions failed msg: {completion}"
+                    
+                    # Log response details
+                    logger.debug(f"[CallLLM API ({self.agent_type})] Response status: {response.status}, completion: {json.dumps(completion)}")
                     await session.close()
                     return completion
 
             except Exception as e:
-                logger.error(f"[CallLLM ERROR] {e}")
+                logger.error(f"[CallLLM ERROR ({self.agent_type})] {e}")
                 await session.close()
                 await asyncio.sleep(2 ** attempt)
                 if attempt < 2:
@@ -242,11 +257,12 @@ class CallLLM:  # Call policy LLM in RL env
         return completion
 
 class CallAPI:  # Call external API
-    def __init__(self, host, port, tokenizer, config, meta_info):
+    def __init__(self, host, port, tokenizer, config, meta_info, agent_type="unknown"):
         self.tokenizer = tokenizer
         self.config = config
         self.meta_info = meta_info
         self.model = host
+        self.agent_type = agent_type
         from openai import AsyncOpenAI
         import os
         self.client = AsyncOpenAI(
@@ -272,9 +288,10 @@ class CallAPI:  # Call external API
             "model": self.model,
             "messages": messages[:2],  # Log first 2 messages to avoid too much verbosity
             "max_completion_tokens": max_tokens,
-            "request_id": f"callapi_{uuid.uuid4().hex[:8]}"
+            "request_id": f"callapi_{uuid.uuid4().hex[:8]}",
+            "agent_type": self.agent_type
         }
-        logger.debug(f"[CallAPI Request] URL: {self.client.base_url if hasattr(self.client, 'base_url') else 'https://api.openai.com/v1'}, Request: {json.dumps(request_data, ensure_ascii=False)}")
+        logger.debug(f"[CallAPI Request ({self.agent_type})] URL: {self.client.base_url if hasattr(self.client, 'base_url') else 'https://api.openai.com/v1'}, Request: {json.dumps(request_data, ensure_ascii=False)}")
 
         for attempt in range(5):
             try:

@@ -1,19 +1,19 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: local-llm
+  name: sglang
   namespace: liuyunxin
   labels:
-    app: local-llm
+    app: sglang
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: local-llm
+      app: sglang
   template:
     metadata:
       labels:
-        app: local-llm
+        app: sglang
     spec:
       containers:
       - name: nvidia-dcgm-exporter
@@ -44,9 +44,8 @@ spec:
         - name: DCGM_EXPORTER_KUBERNETES
           value: "true"
 
-      - name: local-llm
-        image:  harbor.xa.xshixun.com:7443/hanfeigeng/vllm/vllm-openai:v0.13.0-linux-amd64-otel
-        #command: ["sleep", "infinity"]
+      - name: sglang
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/lmsysorg/sglang:dev-pr-15153-linux-amd64-otel
         command: ["bash", "-c"]
         args:
         - |
@@ -54,22 +53,24 @@ spec:
           echo "Downloading model using HF mirror..."
           HF_ENDPOINT=https://hf-mirror.com huggingface-cli download --resume-download --local-dir-use-symlinks False ByteDance-Seed/Seed-OSS-36B-Instruct
           
-          # Start vllm server
-          echo "Starting vllm server..."
-          vllm serve ByteDance-Seed/Seed-OSS-36B-Instruct \
+          # Start sglang server
+          echo "Starting sglang server..."
+          python3 -m sglang.launch_server \
+          --model-path ByteDance-Seed/Seed-OSS-36B-Instruct \
+          --host 0.0.0.0 \
           --port 8080 \
+          --context-length 49152 \
+          --max-running-requests 32 \
+          --chunked-prefill-size 8192 \
+          --mem-fraction-static 0.90 \
+          --enable-p2p-check \
+          --log-level debug \
           --otlp-traces-endpoint jaeger:4317 \
-          --max-model-len 49152  \
-          --max-num-seqs 256 \
-          --max-num-batched-tokens 65536 \
-          --enable-prefix-caching \
-          --enable-chunked-prefill \
-          --enforce-eager \
-          --gpu-memory-utilization 0.95 \
-          --kv-cache-metrics \
-          --kv-cache-metrics-sample 1.0 \
-          --collect-detailed-traces worker 
-
+          --enable-trace \
+          --enable-metrics \
+          --attention-backend triton \
+          --sampling-backend flashinfer \
+          --schedule-policy lpm 
         ports:
         - containerPort: 8080
         env:
@@ -97,21 +98,38 @@ spec:
               name: hf-token-secret
               key: HF_TOKEN
         - name: NO_PROXY
-          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin,jaeger"
+          value: "0.0.0.0,127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin,jaeger"
         - name: no_proxy
-          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin,jaeger"
+          value: "0.0.0.0,127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin,jaeger"
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: "http://jaeger.liuyunxin:4317"  # Points to your Jaeger Service
         - name: OTEL_EXPORTER_OTLP_PROTOCOL
           value: "grpc"
         - name: OTEL_SERVICE_NAME
-          value: "vllm-seed-36b"      # This name will appear in the Jaeger UI
+          value: "sglang-seed-36b"      # This name will appear in the Jaeger UI
         - name: OTEL_TRACES_EXPORTER
           value: "otlp"
         - name: OTEL_EXPORTER_OTLP_INSECURE
           value: "true"
         - name: OTEL_EXPORTER_OTLP_TRACES_INSECURE
           value: "true"
+        # SGLang-specific environment variables
+        - name: SGLANG_ENABLE_TORCH_COMPILE
+          value: "true"
+        - name: SGLANG_ENABLE_TORCH_INFERENCE_MODE
+          value: "true"
+        - name: SGLANG_SET_CPU_AFFINITY
+          value: "1"
+        - name: SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN
+          value: "1"
+        - name: SGLANG_SKIP_P2P_CHECK
+          value: "false"
+        - name: SGLANG_CHUNKED_PREFIX_CACHE_THRESHOLD
+          value: "8192"
+        - name: SGLANG_DISABLE_REQUEST_LOGGING
+          value: "true"
+        - name: SGLANG_HEALTH_CHECK_TIMEOUT
+          value: "60"
         resources:
           limits:
             nvidia.com/gpu: 1
@@ -124,7 +142,6 @@ spec:
         volumeMounts:
         - name: gpfshome
           mountPath: /root
-          # This will automatically make /root/.cache/huggingface persistent
       volumes:
       - name: gpfshome
         persistentVolumeClaim:
@@ -137,11 +154,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: local-llm
+  name: sglang
   namespace: liuyunxin
 spec:
   selector:
-    app: local-llm
+    app: sglang
   ports:
   - port: 8080
     targetPort: 8080
@@ -151,11 +168,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: local-llm-dcgm-exporter
+  name: sglang-dcgm-exporter
   namespace: liuyunxin
 spec:
   selector:
-    app: local-llm
+    app: sglang
   ports:
   - port: 9400
     targetPort: 9400

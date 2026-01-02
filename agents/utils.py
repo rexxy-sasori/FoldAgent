@@ -211,6 +211,8 @@ class CallLLM:  # Call policy LLM in RL env
                 logger.debug(f"[CallLLM API ({self.agent_type})] Full request: {json.dumps(log_request_data)}")
                 timeout = aiohttp.ClientTimeout(total=9600)
                 session = aiohttp.ClientSession(timeout=timeout)
+                # Start timing the API call
+                start_time = time.time()
                 async with session.post(url=self.url,
                                         headers={"Authorization": "Bearer token-abc123"},
                                         json=request_data,
@@ -219,8 +221,14 @@ class CallLLM:  # Call policy LLM in RL env
                     completion['choices'][0]['message']['extra_data']['input_ids'] = input_ids
                     assert response.status == 200, f"chat_completions failed msg: {completion}"
                     
-                    # Log response details
+                    # End timing and calculate duration
+                    end_time = time.time()
+                    duration = end_time - start_time
+                    
+                    # Log response details with timing
+                    request_id = self.meta_info.get('request_id', 'unknown')
                     logger.debug(f"[CallLLM API ({self.agent_type})] Response status: {response.status}, completion: {json.dumps(completion)}")
+                    logger.info(f"[CallLLM Timing ({self.agent_type})] Request ID: {request_id}, Duration: {duration:.2f}s, Attempt: {attempt + 1}")
                     await session.close()
                     return completion
 
@@ -295,13 +303,19 @@ class CallAPI:  # Call external API
 
         for attempt in range(5):
             try:
+                # Start timing the API call
+                start_time = time.time()
                 response = await self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
                     max_completion_tokens=max_tokens,
                 )
+                # End timing and calculate duration
+                end_time = time.time()
+                duration = end_time - start_time
 
-                # Log response details
+                # Log response details with timing
+                request_id = self.meta_info.get('request_id', 'unknown')
                 response_data = {
                     "status": "success",
                     "status_code": 200,  # AsyncOpenAI client handles HTTP status internally
@@ -312,9 +326,12 @@ class CallAPI:  # Call external API
                         "total_tokens": response.usage.total_tokens if response.usage else 0,
                     },
                     "completion_length": len(response.choices[0].message.content or ""),
-                    "attempt": attempt + 1
+                    "attempt": attempt + 1,
+                    "request_id": request_id,
+                    "duration": f"{duration:.2f}s"
                 }
-                logger.info(f"[CallAPI Response] {json.dumps(response_data)}")
+                logger.info(f"[CallAPI Response ({self.agent_type})] {json.dumps(response_data)}")
+                logger.info(f"[CallAPI Timing ({self.agent_type})] Request ID: {request_id}, Duration: {duration:.2f}s, Model: {self.model}, Attempt: {attempt + 1}")
 
                 text = response.choices[0].message.content or ""
                 text_ids = self.tokenizer.encode(text, add_special_tokens=False)
@@ -343,10 +360,10 @@ class CallAPI:  # Call external API
                     "max_attempts": 5
                 }
                 if attempt == 4:
-                    logger.error(f"[CallAPI Response] {json.dumps(error_data)}")
+                    logger.error(f"[CallAPI Response ({self.agent_type})] {json.dumps(error_data)}")
                     return None
                 wait_time = 2 ** attempt
-                logger.warning(f"[CallAPI Retry] {json.dumps(error_data)}, retrying in {wait_time}s...")
+                logger.warning(f"[CallAPI Retry ({self.agent_type})] {json.dumps(error_data)}, retrying in {wait_time}s...")
                 await asyncio.sleep(wait_time)
         return None
 

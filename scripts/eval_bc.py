@@ -39,8 +39,8 @@ warnings.filterwarnings('ignore', message='.*fast tokenizer.*')
 
 from omegaconf import OmegaConf
 from transformers import AutoTokenizer
-from agents.fold_agent import process_item
 from agents.utils import CallAPI, TaskContext
+# Conditionally import the correct agent based on workflow
 from verl import DataProto
 import os
 
@@ -95,11 +95,23 @@ async def eval_one(row, config, tokenizer, model_name):
     }
     item.meta_info = {'generation_kwargs': {}, 'max_turn': config.actor_rollout_ref.rollout.plugin.val_max_turn}
 
-    item_logger.info(f"Calling process_item for evaluation")
-    output = await process_item(item, context, CallAPI)
+    # Get workflow from config and select the appropriate agent
+    workflow = config.actor_rollout_ref.rollout.plugin.workflow
+    item_logger.info(f"Using workflow: {workflow}")
+    
+    if workflow == 'search':
+        from agents.react_agent import process_item as react_process_item
+        item_logger.info(f"Calling react_process_item for evaluation")
+        output = await react_process_item(item, context, CallAPI)
+    else:
+        from agents.fold_agent import process_item as fold_process_item
+        item_logger.info(f"Calling fold_process_item for evaluation")
+        output = await fold_process_item(item, context, CallAPI)
     item_logger.info(f"process_item completed")
 
     score = output.non_tensor_batch.get('extra_data', [{}])[0].get('stats', {}).get('score', 0) if output else 0
+    completion_time = output.non_tensor_batch.get('extra_data', [{}])[0].get('stats', {}).get('completion_time', 0) if output else 0
+    request_id = output.non_tensor_batch.get('extra_data', [{}])[0].get('stats', {}).get('request_id', '') if output else ''
     status = 'success' if output else 'failed'
     data_source = row.get('data_source', 'unknown')
     
@@ -107,10 +119,12 @@ async def eval_one(row, config, tokenizer, model_name):
         'instance_id': instance_id,
         'data_source': data_source,
         'score': score,
-        'status': status
+        'status': status,
+        'completion_time': completion_time,
+        'request_id': request_id
     }
     
-    item_logger.info(f"Evaluation result: instance_id={instance_id}, data_source={data_source}, status={status}, score={score}")
+    item_logger.info(f"Evaluation result: instance_id={instance_id}, data_source={data_source}, status={status}, score={score}, request_id={request_id}")
     return result
 
 
@@ -204,9 +218,24 @@ def main():
     # Summary overall
     avg_score = np.mean([r['score'] for r in results])
     success_count = sum(r['status']=='success' for r in results)
+    
+    # Completion time statistics
+    completion_times = [r['completion_time'] for r in results]
+    avg_time = np.mean(completion_times)
+    median_time = np.median(completion_times)
+    min_time = np.min(completion_times)
+    max_time = np.max(completion_times)
+    std_time = np.std(completion_times)
+    
     logger.info(f"{'='*60}")
     logger.info(f"{'='*60}")
     logger.info(f"Overall - Avg Score: {avg_score:.4f}, Success: {success_count}/{len(results)}")
+    logger.info(f"Completion Time Statistics:")
+    logger.info(f"  Average: {avg_time:.2f} seconds")
+    logger.info(f"  Median: {median_time:.2f} seconds")
+    logger.info(f"  Min: {min_time:.2f} seconds")
+    logger.info(f"  Max: {max_time:.2f} seconds")
+    logger.info(f"  Std: {std_time:.2f} seconds")
 
     # Summary by data_source
     from collections import defaultdict

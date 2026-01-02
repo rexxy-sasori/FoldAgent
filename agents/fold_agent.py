@@ -4,6 +4,7 @@ import time
 import copy
 import asyncio
 import logging
+import uuid
 from functools import partial
 import random
 
@@ -57,6 +58,10 @@ async def process_item(
         context: TaskContext,
         LLMClass=CallLLM,
 ) -> DataProto:
+    start_time = time.time()
+    request_id = str(uuid.uuid4())  # Generate unique request ID
+    logger.info(f'[REQUEST {request_id}] Starting process_item')
+    
     tokenizer = context.tokenizer
     config = context.config.actor_rollout_ref.rollout
     is_train = context.is_train
@@ -69,7 +74,7 @@ async def process_item(
 
     # Select env
     EnvClass = select_env(ability, config, )
-    logger.debug(f'Environment initialized - is_train: {is_train}, EnvClass: {EnvClass.__name__}')
+    logger.debug(f'[REQUEST {request_id}] Environment initialized - is_train: {is_train}, EnvClass: {EnvClass.__name__}')
     env = EnvClass(config, tokenizer, ability)
 
     try:
@@ -99,7 +104,11 @@ async def process_item(
     host = context.server_host
     port = context.server_port
 
-    llm_client = LLMClass(host, port, tokenizer, config, meta_info=agent_config.get("meta_info", {}), agent_type="fold_agent")
+    # Add request ID to meta_info for LLM client
+    meta_info = agent_config.get("meta_info", {})
+    meta_info['request_id'] = request_id
+    llm_client = LLMClass(host, port, tokenizer, config, meta_info=meta_info, agent_type="fold_agent")
+    logger.debug(f'[REQUEST {request_id}] LLM client initialized')
 
     prompt_turn = len(user_prompt)
     agent = dict()
@@ -142,8 +151,9 @@ async def process_item(
             agent[current].append({'role': 'user', 'content': next_session_prompt})
             session_message.append({'role': 'user', 'content': next_session_prompt})
 
+        logger.debug(f'[REQUEST {request_id}] Calling LLM for main agent step {iteration}')
         response = await agent['main'].step()
-        # print(response)
+        logger.debug(f'[REQUEST {request_id}] LLM response received for main agent step {iteration}: {response[:100]}...' if response else f'[REQUEST {request_id}] LLM response was None')
 
         if response is None:
             break
@@ -169,6 +179,7 @@ async def process_item(
                 agent[agent_name] = Agent(llm_client, history, tokenizer, config, prompt_turn=prompt_turn)
                 branch_prompt_formatted = branch_prompt.format(message=message_to_branch)
                 agent[agent_name].append({'role': 'user', 'content': branch_prompt_formatted})
+                logger.debug(f'[REQUEST {request_id}] Calling branch agent {agent_name} react')
                 agent_return = await agent[agent_name].react(
                     partial(run_action, env),
                     max_turn=max_turn,
@@ -180,6 +191,7 @@ async def process_item(
                     summary_prompt="The context limit has been exceeded for the branch. Please finish the sub task directly and clearly state the progress made and the pending jobs of the sub task. Only summarize the sub task progress, using the return tool.",
                     observation_prompt=f"* You are now in branch mode: {description}. Conduct the sub task based on instruction, and when you complete the assigned sub task, use return tool to return, do not perform action beyond the assigned sub task.",
                 )
+                logger.debug(f'[REQUEST {request_id}] Branch agent {agent_name} react completed')
                 iteration += agent_return['iteration']
                 last_response = agent_return['last_response']
                 session_message.extend(agent[agent_name].messages()[len(history):])
@@ -369,7 +381,17 @@ async def process_item(
         outs = [outs[i] for i in idx]
 
     try:
+        end_time = time.time()
+        completion_time = end_time - start_time
+        for out in outs:
+            if 'extra_data' not in out.non_tensor_batch:
+                out.non_tensor_batch['extra_data'] = np.array([{}], dtype=object)
+            if 'stats' not in out.non_tensor_batch['extra_data'][0]:
+                out.non_tensor_batch['extra_data'][0]['stats'] = {}
+            out.non_tensor_batch['extra_data'][0]['stats']['completion_time'] = completion_time
+            out.non_tensor_batch['extra_data'][0]['stats']['request_id'] = request_id
         res = DataProto.concat(outs)
+        logger.info(f'[REQUEST {request_id}] process_item completed in {completion_time:.2f} seconds')
         return res
     except Exception as e:
         breakpoint()

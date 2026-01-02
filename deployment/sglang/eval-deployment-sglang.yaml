@@ -25,7 +25,7 @@ spec:
         args:
           - >
             python3 scripts/eval_bc.py
-            --workflow search
+            --workflow search_branch
             --model_name ByteDance-Seed/Seed-OSS-36B-Instruct
             --local_search_url http://search-server.liuyunxin:8000
             --data_path /app/data/bc_test.parquet

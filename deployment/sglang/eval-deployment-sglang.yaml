@@ -15,34 +15,35 @@ spec:
     spec:
       containers:
       - name: foldagent-eval-sglang
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.46-log-llmbackend
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.55-log-llmbackend
         ports:
         - containerPort: 8000
           name: metrics
-        # command: ["sleep", "infinity"]
-        # Uncomment below to run evaluation automatically
+        #command: ["sleep", "infinity"]
         command: ["bash", "-c"]
         args:
           - >
             python3 scripts/eval_bc.py
             --workflow search_branch
-            --model_name ByteDance-Seed/Seed-OSS-36B-Instruct
-            --local_search_url http://search-server.liuyunxin:8000
-            --data_path /app/data/bc_test.parquet
-            --output_dir /root/results
-            --num_workers 32
-            --prompt_length 16384
-            --response_length 32768
-            --max_turn 200
-            --val_max_turn 200
-            --max_session 10
-            --val_max_session 10
+            --model_name ByteDance-Seed/Seed-OSS-36B-Instruct 
+            --local_search_url http://search-server.liuyunxin:8000 
+            --data_path /app/data/bc_test.parquet 
+            --output_dir /root/results 
+            --num_workers 1 
+            --prompt_length 16384 
+            --response_length 32768 
+            --max_turn 200 
+            --val_max_turn 200 
+            --max_session 10 
+            --val_max_session 10 
             && sleep infinity
         resources:
           limits:
+            nvidia.com/gpu: 1
             memory: "64Gi"
             cpu: "32"
           requests:
+            nvidia.com/gpu: 1
             memory: "64Gi"
             cpu: "32"
         env:
@@ -53,6 +54,8 @@ spec:
               key: openai-api-key
         - name: OPENAI_BASE_URL
           value: "http://sglang.liuyunxin:8080/v1"
+        - name: OPENAI_MODEL
+          value: "ByteDance-Seed/Seed-OSS-36B-Instruct"
         - name: OPENAI_URL
           value: "http://sglang.liuyunxin:8080/v1/chat/completions"
         - name: JUDGE_OPENAI_API_KEY

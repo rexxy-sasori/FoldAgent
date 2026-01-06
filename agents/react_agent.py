@@ -26,7 +26,6 @@ async def process_item(
     start_time = time.time()
     request_id = str(uuid.uuid4())  # Generate unique request ID
     logger.info(f'[REQUEST {request_id}] Starting process_item')
-    os.environ["no_proxy"] = ""
     tokenizer = context.tokenizer
     config = context.config.actor_rollout_ref.rollout
     is_train = context.is_train
@@ -38,7 +37,7 @@ async def process_item(
     # Select env
     EnvClass = select_env(ability, config, )
     logger.debug(f'[REQUEST {request_id}] Environment initialized - is_train: {is_train}, EnvClass: {EnvClass.__name__}')
-    env = EnvClass(config, tokenizer, ability)
+    env = EnvClass(config, tokenizer, ability, request_id=request_id)
 
     try:
         await env.init_env(item)
@@ -61,14 +60,43 @@ async def process_item(
 
     agent = Agent(llm_client, user_prompt, tokenizer, config, prompt_turn=prompt_turn)
     iteration = 0
+    session_start_time = time.time()
+    session_timeout = getattr(config.plugin, "session_timeout", 90 * 60)
+    enable_summary = getattr(config.plugin, "enable_summary", False)
+    init_len = len(agent.context())
+    
     while iteration < max_turn:
+        # Check session timeout
+        if time.time() - session_start_time > session_timeout:
+            logger.info(f'[REQUEST {request_id}] Session Timeout')
+            break
+            
+        # Check context length and summarize if needed
+        if enable_summary and len(agent.context()) - init_len > config.response_length * 0.95:
+            logger.info(f'[REQUEST {request_id}] Context approaching limit, rolling back last turn')
+            agent.rollback(k=2)  # Rollback last turn
+            agent.append({'role': 'assistant', 'content': ""})
+            summary_prompt = "Please summarize the current conversation and progress so far."
+            agent.append({'role': 'user', 'content': summary_prompt})
+            summary_response = await agent.step()
+            if summary_response is None:
+                break
+            # Start new session with summary
+            next_session_prompt = (
+                f"For this question, you have already made the following progress in previous session, "
+                f"summarized as follow:\n\n{summary_response}\n\nNow continue work on it."
+            )
+            agent = Agent(llm_client, user_prompt, tokenizer, config, prompt_turn=prompt_turn)
+            agent.append({'role': 'assistant', 'content': ""})
+            agent.append({'role': 'user', 'content': next_session_prompt})
+        
         iteration += 1
         logger.debug(f'[REQUEST {request_id}] Calling LLM for step {iteration}')
         response = await agent.step()
         logger.debug(f'[REQUEST {request_id}] LLM response received for step {iteration}: {response[:100]}...' if response else f'[REQUEST {request_id}] LLM response was None')
         if response is None:
             break
-        observation = await run_action(env, response)
+        observation = await run_action(env, response, request_id=request_id)
         if observation is None:
             break
         agent.append({'role': 'user', 'content': observation})
@@ -88,15 +116,25 @@ async def process_item(
     out = await env.update_dataproto(out, item, messages, score, reward_dict,
                                          tag='main', metrics=agent.get_metrics())
     
-    # Add completion time to the output
+    # Add completion time and context metrics to the output
     end_time = time.time()
     completion_time = end_time - start_time
+    session_duration = end_time - session_start_time
+    final_context_length = len(agent.context())
+    context_growth = final_context_length - init_len
+    
     if 'extra_data' not in out.non_tensor_batch:
         out.non_tensor_batch['extra_data'] = np.array([{}], dtype=object)
     if 'stats' not in out.non_tensor_batch['extra_data'][0]:
         out.non_tensor_batch['extra_data'][0]['stats'] = {}
-    out.non_tensor_batch['extra_data'][0]['stats']['completion_time'] = completion_time
-    out.non_tensor_batch['extra_data'][0]['stats']['request_id'] = request_id
+    
+    stats = out.non_tensor_batch['extra_data'][0]['stats']
+    stats['completion_time'] = completion_time
+    stats['request_id'] = request_id
+    stats['session_duration'] = session_duration
+    stats['final_context_length'] = final_context_length
+    stats['context_growth'] = context_growth
+    stats['total_turns'] = iteration
     
     res = DataProto.concat([out])
     logger.info(f'[REQUEST {request_id}] process_item completed in {completion_time:.2f} seconds')

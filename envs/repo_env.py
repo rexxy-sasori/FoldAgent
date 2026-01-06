@@ -151,6 +151,15 @@ class SimpleHttpClient:
         self.base_url = base_url.rstrip('/')
         self.timeout = timeout
         self.session = requests.Session()
+        
+        # Configure proxy settings from environment variables
+        http_proxy = os.environ.get('http_proxy') or os.environ.get('HTTP_PROXY')
+        https_proxy = os.environ.get('https_proxy') or os.environ.get('HTTPS_PROXY')
+        
+        if http_proxy:
+            self.session.proxies['http'] = http_proxy
+        if https_proxy:
+            self.session.proxies['https'] = https_proxy
 
         # Set up session headers
         self.session.headers.update({

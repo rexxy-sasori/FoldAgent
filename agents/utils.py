@@ -16,6 +16,7 @@ import torch
 import asyncio, httpx
 from verl import DataProto
 from envs.local_search import LocalSearch
+from .db_client import log_event, global_event_db
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,11 @@ async def call_openai(messages, model='gpt-5-nano', max_retries=3, is_judge=Fals
             }
             logger.debug(f"[OPENAI API{' (JUDGE)' if is_judge else ''}] Full request: {json.dumps(request_content)}")
             
-            async with httpx.AsyncClient(timeout=300.0) as c:
+            # Configure httpx client with proxy settings from environment variables
+            async with httpx.AsyncClient(
+                timeout=300.0,
+                trust_env=True  # Trust environment variables for proxy settings
+            ) as c:
                 headers = {}
                 if api_key:
                     headers["Authorization"] = f"Bearer {api_key}"
@@ -182,6 +187,7 @@ class CallLLM:  # Call policy LLM in RL env
             return None
 
         uid = kwargs.pop('uid', self.meta_info.get('uid', None))
+        agent_type = kwargs.pop('agent_type', self.agent_type)
 
         request_data = {
             "model": "rollout",
@@ -196,6 +202,7 @@ class CallLLM:  # Call policy LLM in RL env
 
         import asyncio
 
+        completion = None
         for attempt in range(10):
             try:
                 # Log request details with timestamp and current attempt number
@@ -209,10 +216,37 @@ class CallLLM:  # Call policy LLM in RL env
                     "agent_type": self.agent_type
                 }
                 logger.debug(f"[CallLLM API ({self.agent_type})] Full request: {json.dumps(log_request_data)}")
+                # Configure proxy settings from environment variables
+                proxy = os.environ.get('http_proxy') or os.environ.get('HTTP_PROXY')
+                https_proxy = os.environ.get('https_proxy') or os.environ.get('HTTPS_PROXY')
+                no_proxy = os.environ.get('no_proxy') or os.environ.get('NO_PROXY', '')
+                
+                # Create TCP connector with proper proxy settings
+                connector = aiohttp.TCPConnector()
+                
+                # Configure timeout
                 timeout = aiohttp.ClientTimeout(total=9600)
-                session = aiohttp.ClientSession(timeout=timeout)
+                
+                # Create session with proxy configuration
+                session = aiohttp.ClientSession(
+                    timeout=timeout,
+                    connector=connector,
+                    trust_env=True  # Trust environment variables for proxy settings
+                )
                 # Start timing the API call
                 start_time = time.time()
+                
+                # Log LLM request to database
+                request_id = self.meta_info.get('request_id', 'unknown')
+                await log_event(
+                    event_type='llm_request',
+                    request_id=request_id,
+                    agent_type=agent_type,
+                    model="rollout",
+                    timestamp=start_time,
+                    branch_context=agent_type  # Indicates "main" or "branch" agent
+                )
+                
                 async with session.post(url=self.url,
                                         headers={"Authorization": "Bearer token-abc123"},
                                         json=request_data,
@@ -229,6 +263,35 @@ class CallLLM:  # Call policy LLM in RL env
                     request_id = self.meta_info.get('request_id', 'unknown')
                     logger.debug(f"[CallLLM API ({self.agent_type})] Response status: {response.status}, completion: {json.dumps(completion)}")
                     logger.info(f"[CallLLM Timing ({self.agent_type})] Request ID: {request_id}, Duration: {duration:.2f}s, Attempt: {attempt + 1}")
+                    
+                    # Log LLM response to database with usage information
+                    usage = completion.get('usage', {})
+                    if hasattr(completion, 'usage'):
+                        usage = vars(completion.usage)
+                    elif 'usage' in completion:
+                        usage = completion['usage']
+                    
+                    # Extract cached_tokens from either direct usage or prompt_tokens_details
+                    cached_tokens = usage.get('cached_tokens', 0)
+                    # Check prompt_tokens_details if not found directly
+                    if cached_tokens == 0:
+                        cached_tokens = usage.get('prompt_tokens_details', {}).get('cached_tokens', 0)
+                    
+                    await log_event(
+                        event_type='llm_response',
+                        request_id=request_id,
+                        agent_type=agent_type,
+                        model="rollout",
+                        start_time=start_time,
+                        end_time=end_time,
+                        duration=duration,
+                        prompt_tokens=usage.get('prompt_tokens', 0),
+                        completion_tokens=usage.get('completion_tokens', 0),
+                        cached_tokens=cached_tokens,
+                        total_tokens=usage.get('total_tokens', 0),
+                        branch_context=agent_type  # Indicates "main" or "branch" agent
+                    )
+                    
                     await session.close()
                     return completion
 
@@ -260,8 +323,74 @@ class CallLLM:  # Call policy LLM in RL env
                 completion["choices"][0]["message"]["content"] = text
                 completion["choices"][0]["message"]["raw_output_ids"] = text_ids
                 completion["choices"][0]["message"]["response_log_probs"] = [0.0] * len(text_ids)
+                
+                # Ensure metrics dictionary exists and has proper structure
+                if "metrics" not in completion["choices"][0]["message"]:
+                    completion["choices"][0]["message"]["metrics"] = {}
+                if "usage" not in completion["choices"][0]["message"]["metrics"]:
+                    completion["choices"][0]["message"]["metrics"]["usage"] = {}
+                
+                # Extract cache metrics from server completion if available
+                if hasattr(completion, 'usage'):
+                    # Check direct cached_tokens first
+                    cached_tokens = 0
+                    if hasattr(completion.usage, 'cached_tokens'):
+                        cached_tokens = completion.usage.cached_tokens
+                    # Check prompt_tokens_details if not found directly
+                    if cached_tokens == 0 and hasattr(completion.usage, 'prompt_tokens_details'):
+                        if hasattr(completion.usage.prompt_tokens_details, 'cached_tokens'):
+                            cached_tokens = completion.usage.prompt_tokens_details.cached_tokens
+                    
+                    if cached_tokens > 0:
+                        completion["choices"][0]["message"]["metrics"]["usage"]["cached_tokens"] = cached_tokens
+                    
+                    if hasattr(completion.usage, 'prompt_tokens_details'):
+                        prompt_tokens_details = completion.usage.prompt_tokens_details
+                        # Serialize prompt_tokens_details to dict
+                        if hasattr(prompt_tokens_details, 'model_dump'):
+                            prompt_tokens_details = prompt_tokens_details.model_dump()
+                        elif hasattr(prompt_tokens_details, '__dict__'):
+                            prompt_tokens_details = prompt_tokens_details.__dict__
+                        completion["choices"][0]["message"]["metrics"]["usage"]["prompt_tokens_details"] = prompt_tokens_details
+                elif 'usage' in completion:
+                    # Check direct cached_tokens first
+                    cached_tokens = completion['usage'].get('cached_tokens', 0)
+                    # Check prompt_tokens_details if not found directly
+                    if cached_tokens == 0:
+                        cached_tokens = completion['usage'].get('prompt_tokens_details', {}).get('cached_tokens', 0)
+                    
+                    if cached_tokens > 0:
+                        completion["choices"][0]["message"]["metrics"]["usage"]["cached_tokens"] = cached_tokens
+                    
+                    if 'prompt_tokens_details' in completion['usage']:
+                        prompt_tokens_details = completion['usage']['prompt_tokens_details']
+                        # Serialize prompt_tokens_details to dict
+                        if hasattr(prompt_tokens_details, 'model_dump'):
+                            prompt_tokens_details = prompt_tokens_details.model_dump()
+                        elif hasattr(prompt_tokens_details, '__dict__'):
+                            prompt_tokens_details = prompt_tokens_details.__dict__
+                        completion["choices"][0]["message"]["metrics"]["usage"]["prompt_tokens_details"] = prompt_tokens_details
         else:
             completion = await self._create_completion(input_ids, **kwargs)
+            
+        # Ensure metrics are properly structured in all cases
+        if completion and "choices" in completion and len(completion["choices"]) > 0:
+            message = completion["choices"][0]["message"]
+            
+            # Extract usage from top-level if present (normal server response case)
+            if not hasattr(message, 'metrics') and 'metrics' not in message:
+                message['metrics'] = {}
+            if 'usage' not in message['metrics']:
+                message['metrics']['usage'] = {}
+            
+            # Copy usage metrics from top-level to message.metrics.usage
+            if hasattr(completion, 'usage'):
+                for key, value in vars(completion.usage).items():
+                    message['metrics']['usage'][key] = value
+            elif 'usage' in completion:
+                for key, value in completion['usage'].items():
+                    message['metrics']['usage'][key] = value
+        
         return completion
 
 class CallAPI:  # Call external API
@@ -269,14 +398,36 @@ class CallAPI:  # Call external API
         self.tokenizer = tokenizer
         self.config = config
         self.meta_info = meta_info
-        self.model = host
+        import os
+        # Check if this is a judge API call
+        is_judge = agent_type == "judge" or getattr(config, "is_judge", False)
+        
+        # Get model name from environment variables
+        if is_judge:
+            self.model = os.getenv("JUDGE_OPENAI_MODEL", "kimi-k2-thinking")
+            openai_url = os.getenv("JUDGE_OPENAI_URL")
+            base_url = os.getenv("JUDGE_OPENAI_BASE_URL")
+            api_key = os.getenv("JUDGE_OPENAI_API_KEY")
+        else:
+            self.model = os.getenv("OPENAI_MODEL", "ByteDance-Seed/Seed-OSS-36B-Instruct")
+            openai_url = None
+            base_url = os.getenv("OPENAI_BASE_URL")
+            api_key = os.getenv("OPENAI_API_KEY", "dummy")
+        
         self.agent_type = agent_type
         from openai import AsyncOpenAI
-        import os
+        
+        # Construct base URL from host and port if not set
+        if not base_url and host and port:
+            if ':' in host:
+                host = f'[{host}]'
+            base_url = f"http://{host}:{port}/v1"
+        
         self.client = AsyncOpenAI(
-            api_key=os.getenv("OPENAI_API_KEY"),
-            base_url=os.getenv("OPENAI_BASE_URL", None)  # Optional custom base URL
+            api_key=api_key,  # Use provided key or dummy
+            base_url=base_url
         )
+        self.openai_url = openai_url
 
     async def create_completion(self, input_ids, **kwargs):
         max_len = kwargs.pop('max_len', None) or self.config.prompt_length + self.config.response_length
@@ -291,31 +442,78 @@ class CallAPI:  # Call external API
             return None
         messages = kwargs.get('messages') or decode_conversation(input_ids, self.tokenizer)[0]
 
-        # Log request details
+        # Get agent_type from kwargs if provided, otherwise use self.agent_type
+        agent_type = kwargs.pop('agent_type', self.agent_type)
+
+        # Log request details - use the same request_id from meta_info
+        request_id = self.meta_info.get('request_id', f"callapi_{uuid.uuid4().hex[:8]}")
         request_data = {
             "model": self.model,
             "messages": messages[:2],  # Log first 2 messages to avoid too much verbosity
             "max_completion_tokens": max_tokens,
-            "request_id": f"callapi_{uuid.uuid4().hex[:8]}",
-            "agent_type": self.agent_type
+            "request_id": request_id,
+            "agent_type": agent_type
         }
-        logger.debug(f"[CallAPI Request ({self.agent_type})] URL: {self.client.base_url if hasattr(self.client, 'base_url') else 'https://api.openai.com/v1'}, Request: {json.dumps(request_data, ensure_ascii=False)}")
+        logger.debug(f"[CallAPI Request ({agent_type})] URL: {self.client.base_url if hasattr(self.client, 'base_url') else 'https://api.openai.com/v1'}, Request: {json.dumps(request_data, ensure_ascii=False)}")
 
         for attempt in range(5):
             try:
                 # Start timing the API call
                 start_time = time.time()
+                
+                # Log LLM request to database
+                await log_event(
+                    event_type='llm_request',
+                    request_id=request_id,
+                    agent_type=agent_type,
+                    model=self.model,
+                    timestamp=start_time,
+                    branch_context=agent_type  # Indicates "main" or "branch" agent
+                )
+                
+                # Use the same request_id for the API call that was logged in the request
                 response = await self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
                     max_completion_tokens=max_tokens,
+                    extra_headers={"X-Request-ID": request_id},
                 )
                 # End timing and calculate duration
                 end_time = time.time()
                 duration = end_time - start_time
 
-                # Log response details with timing
-                request_id = self.meta_info.get('request_id', 'unknown')
+                # Get the actual request ID from response if available
+                # Check if response has its own request_id (some providers use this)
+                actual_request_id = request_id  # Default to client-generated
+                if hasattr(response, 'request_id'):
+                    logger.debug(f"[CallAPI Debug] Response has its own request_id: {response.request_id}")
+                    actual_request_id = response.request_id
+                # Check if response has id (OpenAI uses this as completion ID)
+                elif hasattr(response, 'id'):
+                    logger.debug(f"[CallAPI Debug] Response has completion id: {response.id}")
+                    actual_request_id = response.id
+                # Also check if response has headers with request ID (some providers return it in headers)
+                elif hasattr(response, 'headers') and 'X-Request-ID' in response.headers:
+                    logger.debug(f"[CallAPI Debug] Response headers have X-Request-ID: {response.headers['X-Request-ID']}")
+                    actual_request_id = response.headers['X-Request-ID']
+                
+                # Log response details with consistent request ID
+                # Extract cache metrics if available
+                cached_tokens = 0
+                if hasattr(response.usage, 'cached_tokens'):
+                    cached_tokens = response.usage.cached_tokens
+                # Check prompt_tokens_details for cached_tokens if not found directly
+                if cached_tokens == 0 and hasattr(response.usage, 'prompt_tokens_details'):
+                    if hasattr(response.usage.prompt_tokens_details, 'cached_tokens'):
+                        cached_tokens = response.usage.prompt_tokens_details.cached_tokens
+                
+                # Serialize prompt_tokens_details to dict
+                prompt_tokens_details = response.usage.prompt_tokens_details if hasattr(response.usage, 'prompt_tokens_details') else {}
+                if hasattr(prompt_tokens_details, 'model_dump'):
+                    prompt_tokens_details = prompt_tokens_details.model_dump()
+                elif hasattr(prompt_tokens_details, '__dict__'):
+                    prompt_tokens_details = prompt_tokens_details.__dict__
+                
                 response_data = {
                     "status": "success",
                     "status_code": 200,  # AsyncOpenAI client handles HTTP status internally
@@ -324,17 +522,37 @@ class CallAPI:  # Call external API
                         "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
                         "completion_tokens": response.usage.completion_tokens if response.usage else 0,
                         "total_tokens": response.usage.total_tokens if response.usage else 0,
+                        "cached_tokens": cached_tokens,
+                        "prompt_tokens_details": prompt_tokens_details
                     },
                     "completion_length": len(response.choices[0].message.content or ""),
                     "attempt": attempt + 1,
-                    "request_id": request_id,
+                    "request_id": actual_request_id,  # Use consistent request ID
                     "duration": f"{duration:.2f}s"
                 }
                 logger.info(f"[CallAPI Response ({self.agent_type})] {json.dumps(response_data)}")
-                logger.info(f"[CallAPI Timing ({self.agent_type})] Request ID: {request_id}, Duration: {duration:.2f}s, Model: {self.model}, Attempt: {attempt + 1}")
-
+                logger.info(f"[CallAPI Timing ({self.agent_type})] Request ID: {actual_request_id}, Duration: {duration:.2f}s, Model: {self.model}, Attempt: {attempt + 1}")
+                
+                # Get text content and encode for token count
                 text = response.choices[0].message.content or ""
                 text_ids = self.tokenizer.encode(text, add_special_tokens=False)
+                
+                # Log LLM response to database with usage information
+                usage = response.usage
+                await log_event(
+                    event_type='llm_response',
+                    request_id=request_id,
+                    agent_type=agent_type,
+                    model=self.model,
+                    start_time=start_time,
+                    end_time=end_time,
+                    duration=duration,
+                    prompt_tokens=usage.prompt_tokens if usage else 0,
+                    completion_tokens=usage.completion_tokens if usage else len(text_ids),
+                    cached_tokens=cached_tokens,
+                    total_tokens=usage.total_tokens if usage else 0,
+                    branch_context=agent_type  # Indicates "main" or "branch" agent
+                )
 
                 return {
                     "choices": [{
@@ -342,11 +560,13 @@ class CallAPI:  # Call external API
                             "content": text,
                             "raw_output_ids": text_ids,
                             "response_log_probs": [0.0] * len(text_ids),
-                            "extra_data": {"input_ids": input_ids},
+                            "extra_data": {"input_ids": input_ids, "request_id": actual_request_id},
                             "metrics": {"usage": {
                                 "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
                                 "completion_tokens": response.usage.completion_tokens if response.usage else len(text_ids),
                                 "total_tokens": response.usage.total_tokens if response.usage else 0,
+                                "cached_tokens": cached_tokens,
+                                "prompt_tokens_details": prompt_tokens_details
                             }}
                         }
                     }]
@@ -357,7 +577,8 @@ class CallAPI:  # Call external API
                     "model": self.model,
                     "attempt": attempt + 1,
                     "error": str(e),
-                    "max_attempts": 5
+                    "max_attempts": 5,
+                    "request_id": request_id  # Use client-generated for errors
                 }
                 if attempt == 4:
                     logger.error(f"[CallAPI Response ({self.agent_type})] {json.dumps(error_data)}")
@@ -528,11 +749,12 @@ class AgentContext:
 
 class Agent(AgentContext):
     # Agent utils
-    def __init__(self, llm_client, conversations, tokenizer, config, prompt_turn=2):
+    def __init__(self, llm_client, conversations, tokenizer, config, prompt_turn=2, agent_type="main"):
         super().__init__(conversations, tokenizer, config, prompt_turn=prompt_turn)
         self.llm_client = llm_client
         self.retry_cjk = getattr(config.plugin, "retry_cjk", 0)
         self.info_cache = {}
+        self.agent_type = agent_type
 
     async def step(self, max_new_tokens=None, retry_cjk=0):
         prompt = self.context()
@@ -540,19 +762,60 @@ class Agent(AgentContext):
         if max_new_tokens is not None:
             max_len = min(len(prompt) + max_new_tokens, 131072)
         completion = await self.llm_client.create_completion(
-            prompt, uid=self.context_uid, max_len=max_len, messages=self.chat)
+            prompt, uid=self.context_uid, max_len=max_len, messages=self.chat, agent_type=self.agent_type)
         if completion is None:
             return None
         if max(self.retry_cjk, retry_cjk):
             if is_weird(completion["choices"][0]["message"]["content"]):
                 for _ in range(int(max(self.retry_cjk, retry_cjk))):
                     completion = await self.llm_client.create_completion(
-                        prompt, uid=self.context_uid, max_len=max_len, messages=self.chat)
+                        prompt, uid=self.context_uid, max_len=max_len, messages=self.chat, agent_type=self.agent_type)
                     if is_weird(completion["choices"][0]["message"]["content"]):
                         continue
                     else:
                         break
         response = completion["choices"][0]["message"]["content"]
+        
+        # LLM response analysis for information stalls
+        # Define regex patterns to detect information stall phrases
+        stall_patterns = [
+            r"i don't have the info",
+            r"i need to check again",
+            r"the previous summary was unclear",
+            r"i don't have the information",
+            r"i need more information",
+            r"i'm not sure",
+            r"i can't determine",
+            r"i don't know",
+            r"the information is not available",
+            r"i need to verify",
+            r"i need to confirm",
+            r"this is unclear",
+            r"this is confusing"
+        ]
+        
+        # Combine patterns into a single regex with case insensitivity
+        combined_pattern = re.compile('|'.join(stall_patterns), re.IGNORECASE)
+        
+        # Check for matches
+        matches = combined_pattern.findall(response)
+        if matches:
+            # Get the actual matched text from the response
+            match_objects = combined_pattern.finditer(response)
+            actual_matches = [match.group() for match in match_objects]
+            
+            # Log information stall event
+            for matched_phrase in actual_matches:
+                await log_event(
+                    event_type='INFORMATION_STALL',
+                    request_id=self.llm_client.meta_info.get('request_id', 'unknown'),
+                    timestamp=time.time(),
+                    matched_phrase=matched_phrase,
+                    conversation_context=f"{self.agent_type} agent step",
+                    confidence_score=1.0,  # Static confidence for exact regex matches
+                    response_excerpt=response[:200] + "..." if len(response) > 200 else response
+                )
+        
         self.append({'role': 'assistant', 'content': response}, completion)
         return response
 
@@ -638,20 +901,58 @@ class TaskContext:
     tokenizer: Optional[PreTrainedTokenizer] = None
 
 
-async def run_action(env, response):
+async def run_action(env, response, request_id=None):
     try:
         try:
             act = time.time()
-            env_return = await asyncio.wait_for(env.run_action(response), timeout=120.0)
+            
+            # Extract function call and arguments before execution for pre-validation
+            env_return = await asyncio.wait_for(env.run_action(response, request_id=request_id), timeout=120.0)
+            
             if time.time() - act > 10:
                 logger.debug('Action Cost %.4f', time.time() - act)
         except asyncio.TimeoutError:
             logger.info('[ACTION] Action timed out after 120 seconds')
             env_return = {'observation': 'Action timed out after 120 seconds'}
+            return env_return['observation']
+        
         if 'action' in env_return:
             action, arguments = env_return['action'], env_return.get('arguments', {})
             if action == 'finish':
                 return None
+            
+            # Pre-execution validation for tool calls
+            if action and arguments:
+                # Generate normalized representation of the tool call
+                normalized_call = f"{action}:{json.dumps(arguments, sort_keys=True)}"
+                
+                # Check if this tool call has been made before
+                existed = await global_event_db.check_and_log_tool_call(
+                    normalized_call=normalized_call,
+                    function_name=action,
+                    arguments=arguments,
+                    request_id=request_id,
+                    branch_id=getattr(env, 'branch_id', 'main')
+                )
+                
+                # Log inefficiency if duplicate tool call detected
+                if existed:
+                    # Get previous occurrence details
+                    previous_call = await global_event_db.get_previous_tool_call(normalized_call)
+                    if previous_call:
+                        await log_event(
+                            event_type='FOLD_INNEFICIENCY',
+                            request_id=request_id,
+                            timestamp=time.time(),
+                            tool_call=normalized_call,
+                            function_name=action,
+                            arguments=arguments,
+                            branch_id=getattr(env, 'branch_id', 'main'),
+                            previous_occurrence_time=previous_call['first_occurrence_time'],
+                            previous_request_id=previous_call['first_occurrence_request_id'],
+                            occurrence_count=previous_call['occurrence_count'] + 1
+                        )
+        
         observation = env_return.pop('observation', 'Empty')
     except Exception as e:
         observation = f"Error: {e}"

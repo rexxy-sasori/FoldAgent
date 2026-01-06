@@ -8,8 +8,6 @@ import uuid
 from functools import partial
 import random
 
-logger = logging.getLogger(__name__)
-
 import numpy as np
 import torch
 
@@ -18,6 +16,7 @@ from .utils import CallLLM, Agent, select_env, truncate_text, is_weird, TaskCont
 from .prompts import create_chat
 from .prompts import BRANCH_MESSAGE_SEARCH, BRANCH_MESSAGE, SUMMARY_PROMPT_CODE, SUMMARY_PROMPT_SEARCH
 from .verifier import judge_scope
+from .db_client import log_event
 
 
 def print_chat(chat):
@@ -75,7 +74,7 @@ async def process_item(
     # Select env
     EnvClass = select_env(ability, config, )
     logger.debug(f'[REQUEST {request_id}] Environment initialized - is_train: {is_train}, EnvClass: {EnvClass.__name__}')
-    env = EnvClass(config, tokenizer, ability)
+    env = EnvClass(config, tokenizer, ability, request_id=request_id)
 
     try:
         await env.init_env(item)
@@ -112,7 +111,7 @@ async def process_item(
 
     prompt_turn = len(user_prompt)
     agent = dict()
-    agent['main'] = Agent(llm_client, user_prompt, tokenizer, config, prompt_turn=prompt_turn)
+    agent['main'] = Agent(llm_client, user_prompt, tokenizer, config, prompt_turn=prompt_turn, agent_type="main")
     branches = []
     branch_tasks = {}
     branch_return = {}
@@ -172,16 +171,25 @@ async def process_item(
                 # Enhanced logging with more details
                 logger.info(f'[BRANCH] {description} | Agent: {agent_name} | Context length: {context_length} | Branch count: {branch_count + 1}')
                 logger.debug('[BRANCH] %s %d', description, len(agent['main'].context()))
+                # Log branch event to database
+                await log_event(
+                    event_type='branch',
+                    request_id=request_id,
+                    description=description,
+                    agent_name=agent_name,
+                    context_length=context_length,
+                    branch_count=branch_count + 1
+                )
                 # print(message_to_branch)
                 branches.append(agent_name)
                 branch_tasks[agent_name] = message_to_branch
                 history = agent['main'].messages()
-                agent[agent_name] = Agent(llm_client, history, tokenizer, config, prompt_turn=prompt_turn)
+                agent[agent_name] = Agent(llm_client, history, tokenizer, config, prompt_turn=prompt_turn, agent_type="branch")
                 branch_prompt_formatted = branch_prompt.format(message=message_to_branch)
                 agent[agent_name].append({'role': 'user', 'content': branch_prompt_formatted})
                 logger.debug(f'[REQUEST {request_id}] Calling branch agent {agent_name} react')
                 agent_return = await agent[agent_name].react(
-                    partial(run_action, env),
+                    partial(run_action, env, request_id=request_id),
                     max_turn=max_turn,
                     max_tokens=getattr(config.plugin, "branch_len", None),
                     session_timeout=session_timeout - time.time() + session_start_time,
@@ -204,6 +212,16 @@ async def process_item(
                     # Enhanced logging for return tool calls
                     logger.info(f'[RETURN] {description} | Agent: {agent_name} | Context length: {len(agent[agent_name].context())}')
                     logger.debug(f'[RETURN] Return message: {branch_message}' if branch_message else f'[RETURN] Return without message')
+                    # Log return event to database
+                    await log_event(
+                        event_type='return',
+                        request_id=request_id,
+                        description=description,
+                        agent_name=agent_name,
+                        context_length=len(agent[agent_name].context()),
+                        branch_message=branch_message,
+                        return_type='explicit'
+                    )
                 elif fn_call is not None and fn_call['function'] == 'finish':
                     if 'message' in fn_call['arguments']:
                         branch_message = fn_call['arguments'].get('message', 'Empty message')
@@ -211,16 +229,36 @@ async def process_item(
                     # Enhanced logging for finish function (also treated as branch return)
                     logger.info(f'[RETURN] {description} | Agent: {agent_name} | Context length: {len(agent[agent_name].context())}')
                     logger.debug(f'[RETURN] Return message (via finish): {branch_message}' if branch_message else f'[RETURN] Return without message (via finish)')
+                    # Log return event to database
+                    await log_event(
+                        event_type='return',
+                        request_id=request_id,
+                        description=description,
+                        agent_name=agent_name,
+                        context_length=len(agent[agent_name].context()),
+                        branch_message=branch_message,
+                        return_type='finish'
+                    )
                 if branch_message is None:
                     branch_message = f'Branch has finished its task. The last message was:\n\n{clean_response(last_response)}'
                     # Enhanced logging for implicit return (no explicit return/finish call)
                     logger.info(f'[RETURN] {description} | Agent: {agent_name} | Context length: {len(agent[agent_name].context())}')
                     logger.debug(f'[RETURN] Implicit return without explicit function call')
+                    # Log return event to database
+                    await log_event(
+                        event_type='return',
+                        request_id=request_id,
+                        description=description,
+                        agent_name=agent_name,
+                        context_length=len(agent[agent_name].context()),
+                        branch_message=branch_message,
+                        return_type='implicit'
+                    )
                 observation = branch_message
                 branch_return[agent_name] = observation
                 # print(observation)
         else:
-            observation = await run_action(env, response)
+            observation = await run_action(env, response, request_id=request_id)
             if observation is None:
                 mask_rollout = False
                 break
@@ -237,6 +275,19 @@ async def process_item(
         session_message.append({'role': 'user', 'content': observation})
 
     env.stats['session_time'] = time.time() - session_start_time
+    # Calculate inference time - time up to reward calculation
+    inference_time = time.time() - start_time
+    env.stats['inference_time'] = inference_time
+
+    # Log inference complete event to database
+    await log_event(
+        event_type='inference_complete',
+        request_id=request_id,
+        inference_time=inference_time,
+        session_time=env.stats['session_time'],
+        traj_num=len(agent),
+        main_turn=len(agent['main'].messages())
+    )
 
     logger.info('[TASK] Task Finish, Start Reward')
     try:
@@ -382,16 +433,19 @@ async def process_item(
 
     try:
         end_time = time.time()
-        completion_time = end_time - start_time
+        full_completion_time = end_time - start_time
+        # Use inference_time instead of full completion time to exclude reward calculation
+        completion_time = inference_time
         for out in outs:
             if 'extra_data' not in out.non_tensor_batch:
                 out.non_tensor_batch['extra_data'] = np.array([{}], dtype=object)
             if 'stats' not in out.non_tensor_batch['extra_data'][0]:
                 out.non_tensor_batch['extra_data'][0]['stats'] = {}
             out.non_tensor_batch['extra_data'][0]['stats']['completion_time'] = completion_time
+            out.non_tensor_batch['extra_data'][0]['stats']['full_completion_time'] = full_completion_time
             out.non_tensor_batch['extra_data'][0]['stats']['request_id'] = request_id
         res = DataProto.concat(outs)
-        logger.info(f'[REQUEST {request_id}] process_item completed in {completion_time:.2f} seconds')
+        logger.info(f'[REQUEST {request_id}] process_item inference completed in {completion_time:.2f} seconds (full time including reward: {full_completion_time:.2f} seconds)')
         return res
     except Exception as e:
         breakpoint()

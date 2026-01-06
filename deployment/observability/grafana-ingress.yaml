@@ -34,7 +34,7 @@ spec:
               service:
                 name: sglang
                 port:
-                  number: 8080
+                  number: 8080k
           - path: /dcgm/(.*)
             pathType: ImplementationSpecific
             backend:

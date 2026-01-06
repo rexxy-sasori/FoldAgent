@@ -9,6 +9,7 @@ from collections import Counter
 import ast
 import asyncio, json, httpx
 import logging
+from typing import Optional
 
 # call this once early (after your logging.basicConfig if you use it)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -196,7 +197,11 @@ async def call_openai(messages, model='gpt-3.5-turbo', max_retries=3, is_judge=F
             }
             logger.debug(f"[OPENAI API{' (JUDGE)' if is_judge else ''}] Full request: {json.dumps(request_content)}")
             
-            async with httpx.AsyncClient(timeout=300.0) as c:
+            # Configure httpx client with proxy settings from environment variables
+            async with httpx.AsyncClient(
+                timeout=300.0,
+                trust_env=True  # Trust environment variables for proxy settings
+            ) as c:
                 headers = {}
                 if api_key:
                     headers["Authorization"] = f"Bearer {api_key}"
@@ -318,12 +323,17 @@ def keep_first_n_words(text: str, n: int = 1000) -> str:
 
 
 class AsyncSearchClient:
-    def __init__(self, base_url: str, timeout: float = 300.0, retries: int = 3, backoff: float = 0.5):
+    def __init__(self, base_url: str, timeout: float = 300.0, retries: int = 3, backoff: float = 0.5, request_id: Optional[str] = None):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.retries = retries
         self.backoff = backoff
-        self._client = httpx.AsyncClient(base_url=self.base_url)
+        self.request_id = request_id
+        # Configure proxy settings from environment variables
+        self._client = httpx.AsyncClient(
+            base_url=self.base_url,
+            trust_env=True  # Trust environment variables for proxy settings
+        )
 
     async def close(self):
         await self._client.aclose()
@@ -353,7 +363,45 @@ class AsyncSearchClient:
 
     async def search(self, query: str, k: int = 10):
         logger.info(f"[SEARCH] Initiating search with query: '{query}' (top {k} results)")
-        return await self._post("/search", {"query": query, "k": k})
+        start_time = time.time()
+        try:
+            result = await self._post("/search", {"query": query, "k": k})
+            end_time = time.time()
+            duration = end_time - start_time
+            
+            # Log search event to database if request_id is available
+            if self.request_id:
+                from agents.db_client import log_event
+                await log_event(
+                    event_type='search_server',
+                    request_id=self.request_id,
+                    query=query,
+                    k=k,
+                    start_time=start_time,
+                    end_time=end_time,
+                    duration=duration,
+                    result_count=len(result) if isinstance(result, list) else 0
+                )
+            
+            return result
+        except Exception as e:
+            end_time = time.time()
+            duration = end_time - start_time
+            
+            # Log search error to database if request_id is available
+            if self.request_id:
+                from agents.db_client import log_event
+                await log_event(
+                    event_type='search_server_error',
+                    request_id=self.request_id,
+                    query=query,
+                    k=k,
+                    start_time=start_time,
+                    end_time=end_time,
+                    duration=duration,
+                    error=str(e)
+                )
+            raise
 
     async def open(self, url: str | None = None, docid: str | None = None):
         if url:
@@ -433,10 +481,11 @@ def extract_fn_call(text):
 
 
 class LocalSearch:
-    def __init__(self, config, tokenizer, ability):
+    def __init__(self, config, tokenizer, ability, request_id=None):
         self.config = config
         self.tokenizer = tokenizer
         self.ability = ability
+        self.request_id = request_id
         self.stats = collections.Counter()
         self.stats['finish'] = 0
         self.stats['search'] = 0
@@ -450,7 +499,7 @@ class LocalSearch:
 
         base_url = os.getenv("LOCAL_SEARCH_URL")
 
-        self.client = AsyncSearchClient(base_url=base_url)
+        self.client = AsyncSearchClient(base_url=base_url, request_id=request_id)
         self.question = None
         self.label_answer = None
         self.predicted_answer = None
@@ -497,8 +546,12 @@ class LocalSearch:
                     max_turn = self.config.plugin.max_turn
         return conversations, {'max_turn': max_turn, 'meta_info': meta_info}
 
-    async def run_action(self, response):
+    async def run_action(self, response, request_id=None):
         self.stats['action'] += 1
+        # Update request_id if provided
+        if request_id:
+            self.request_id = request_id
+            self.client.request_id = request_id
         fn_call = extract_fn_call(response)
         if fn_call is None or len(fn_call) == 0:
             # Improved message for no function call

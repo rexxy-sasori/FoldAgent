@@ -3,3 +3,7 @@ results
 .DS_Store
 __pycache__
 *.pyc
+.trae
+.*_cache
+*.csv
+*.db

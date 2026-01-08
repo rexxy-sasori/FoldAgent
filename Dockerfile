@@ -14,7 +14,7 @@ COPY external/verl/ ./external/verl/
 RUN pip3 install ./external/verl
 
 # Install additional Python dependencies
-RUN pip3 install fastapi uvicorn transformers numpy pandas tqdm omegaconf torch huggingface_hub==0.36.0 sqlalchemy asyncpg aiosqlite
+RUN pip3 install fastapi uvicorn transformers numpy pandas tqdm omegaconf torch huggingface_hub==0.36.0 sqlalchemy asyncpg psycopg2-binary aiosqlite
 RUN pip3 install flash-attn --no-build-isolation 
 
 # Clean up unnecessary files after installation

@@ -1,0 +1,30 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cloudbeaver-ingress
+  namespace: liuyunxin
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    # CloudBeaver handles headers well, but we'll stay consistent with your port
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header X-Forwarded-Port 7443;
+      proxy_set_header X-Forwarded-Proto https;
+      proxy_set_header Host $host:7443;
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - cloudbeaver-liuyunxin.xa.xshixun.cn
+    secretName: cloudbeaver-tls
+  rules:
+  - host: cloudbeaver-liuyunxin.xa.xshixun.cn
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: cloudbeaver
+            port:
+              number: 80

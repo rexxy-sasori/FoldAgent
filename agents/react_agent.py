@@ -24,7 +24,10 @@ async def process_item(
         LLMClass=CallLLM,
 ) -> DataProto:
     start_time = time.time()
-    request_id = str(uuid.uuid4())  # Generate unique request ID
+    # Generate request_id based on item UID and agent type for consistent comparison
+    item_uid = item.non_tensor_batch['uid'][0] if 'uid' in item.non_tensor_batch else str(uuid.uuid4())
+    run_id = uuid.uuid4().hex[:8]  # Short unique identifier for this run
+    request_id = f"{item_uid}_react_agent_{run_id}"
     logger.info(f'[REQUEST {request_id}] Starting process_item')
     tokenizer = context.tokenizer
     config = context.config.actor_rollout_ref.rollout
@@ -58,7 +61,7 @@ async def process_item(
     logger.debug(f'[REQUEST {request_id}] LLM client initialized')
     prompt_turn = len(user_prompt)
 
-    agent = Agent(llm_client, user_prompt, tokenizer, config, prompt_turn=prompt_turn)
+    agent = Agent(llm_client, user_prompt, tokenizer, config, prompt_turn=prompt_turn, agent_type="react_agent")
     iteration = 0
     session_start_time = time.time()
     session_timeout = getattr(config.plugin, "session_timeout", 90 * 60)
@@ -86,7 +89,7 @@ async def process_item(
                 f"For this question, you have already made the following progress in previous session, "
                 f"summarized as follow:\n\n{summary_response}\n\nNow continue work on it."
             )
-            agent = Agent(llm_client, user_prompt, tokenizer, config, prompt_turn=prompt_turn)
+            agent = Agent(llm_client, user_prompt, tokenizer, config, prompt_turn=prompt_turn, agent_type="react_agent")
             agent.append({'role': 'assistant', 'content': ""})
             agent.append({'role': 'user', 'content': next_session_prompt})
         

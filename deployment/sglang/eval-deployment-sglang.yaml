@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: foldagent-eval-sglang
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.55-log-llmbackend
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.60-log-llmbackend
         ports:
         - containerPort: 8000
           name: metrics
@@ -29,7 +29,7 @@ spec:
             --local_search_url http://search-server.liuyunxin:8000 
             --data_path /app/data/bc_test.parquet 
             --output_dir /root/results 
-            --num_workers 1 
+            --num_workers 32 
             --prompt_length 16384 
             --response_length 32768 
             --max_turn 200 
@@ -38,12 +38,10 @@ spec:
             --val_max_session 10 
             && sleep infinity
         resources:
-          limits:
-            nvidia.com/gpu: 1
+          limits: 
             memory: "64Gi"
             cpu: "32"
           requests:
-            nvidia.com/gpu: 1
             memory: "64Gi"
             cpu: "32"
         env:
@@ -98,6 +96,11 @@ spec:
           value: "DEBUG"  # Set desired log level here
         - name: LOG_FORMAT
           value: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"  # Custom format example
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secrets
+              key: DATABASE_URL
         volumeMounts:
         - name: gpfshome
           mountPath: /root

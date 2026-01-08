@@ -15,10 +15,24 @@ try:
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
     from sqlalchemy.sql import text
+    # Try to import asyncpg for PostgreSQL support
+    import asyncpg
     SQLALCHEMY_AVAILABLE = True
-except ImportError:
+    POSTGRESQL_AVAILABLE = True
+except ImportError as e:
     SQLALCHEMY_AVAILABLE = False
-    logging.warning("SQLAlchemy not available, PostgreSQL support disabled")
+    POSTGRESQL_AVAILABLE = False
+    if 'sqlalchemy' in str(e):
+        logging.warning("SQLAlchemy not available, PostgreSQL support disabled")
+    else:
+        logging.warning("SQLAlchemy asyncpg not available, PostgreSQL support may be limited")
+        try:
+            from sqlalchemy import create_engine, Column, Integer, Float, String, Text
+            from sqlalchemy.ext.declarative import declarative_base
+            from sqlalchemy.orm import sessionmaker
+            SQLALCHEMY_AVAILABLE = True
+        except ImportError:
+            pass
 
 logger = logging.getLogger(__name__)
 
@@ -53,45 +67,50 @@ class SQLiteEventDB(EventDB):
     
     def _create_table(self):
         """Create the events and tool_calls tables if they don't exist."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Create events table with request_id index for fast queries
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp REAL,
-                event_type TEXT,
-                request_id TEXT,
-                event_data TEXT
-            )
-        ''')
-        
-        # Create index on request_id for fast lookup
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_events_request_id ON events (request_id)
-        ''')
-        
-        # Create tool_calls table to track all unique tool calls across branches
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS tool_calls (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                normalized_call TEXT,
-                function_name TEXT,
-                arguments TEXT,
-                first_occurrence_time REAL,
-                first_occurrence_request_id TEXT,
-                occurrence_count INTEGER DEFAULT 1
-            )
-        ''')
-        
-        # Create unique index on normalized_call for fast lookups
-        cursor.execute('''
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_calls_normalized ON tool_calls (normalized_call)
-        ''')
-        
-        conn.commit()
-        conn.close()
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Create events table with request_id index for fast queries
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp REAL,
+                    event_type TEXT,
+                    request_id TEXT,
+                    event_data TEXT
+                )
+            ''')
+            
+            # Create index on request_id for fast lookup
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_events_request_id ON events (request_id)
+            ''')
+            
+            # Create tool_calls table to track all unique tool calls across branches
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS tool_calls (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    normalized_call TEXT,
+                    function_name TEXT,
+                    arguments TEXT,
+                    first_occurrence_time REAL,
+                    first_occurrence_request_id TEXT,
+                    occurrence_count INTEGER DEFAULT 1
+                )
+            ''')
+            
+            # Create unique index on normalized_call for fast lookups
+            cursor.execute('''
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_calls_normalized ON tool_calls (normalized_call)
+            ''')
+            
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully initialized SQLite database tables at {self.db_path}")
+        except Exception as e:
+            logger.error(f"Failed to initialize SQLite database tables at {self.db_path}: {e}")
+            raise
     
     async def log_event(self, event_type: str, request_id: str, **kwargs) -> None:
         """Log an event to SQLite database."""
@@ -110,6 +129,7 @@ class SQLiteEventDB(EventDB):
             # Run synchronous code in executor
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, sync_log)
+            logger.info(f"Successfully logged event: {event_type} for request_id: {request_id}")
             
         except Exception as e:
             logger.error(f"Failed to log event: {e}")
@@ -137,7 +157,9 @@ class SQLiteEventDB(EventDB):
             
             # Run synchronous code in executor
             loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(None, sync_query)
+            events = await loop.run_in_executor(None, sync_query)
+            logger.info(f"Successfully retrieved {len(events)} events for request_id: {request_id}")
+            return events
             
         except Exception as e:
             logger.error(f"Failed to retrieve events: {e}")
@@ -185,6 +207,11 @@ class SQLiteEventDB(EventDB):
             loop = asyncio.get_running_loop()
             existed, existing_record = await loop.run_in_executor(None, sync_check_and_log)
             
+            if existed:
+                logger.info(f"Successfully found and incremented existing tool call: {function_name} for normalized_call: {normalized_call}")
+            else:
+                logger.info(f"Successfully logged new tool call: {function_name} for normalized_call: {normalized_call}, request_id: {request_id}")
+            
             return existed
             
         except Exception as e:
@@ -212,7 +239,14 @@ class SQLiteEventDB(EventDB):
             
             # Run synchronous code in executor
             loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(None, sync_query)
+            tool_call = await loop.run_in_executor(None, sync_query)
+            
+            if tool_call:
+                logger.info(f"Successfully retrieved previous tool call: {tool_call['function_name']} for normalized_call: {normalized_call}")
+            else:
+                logger.info(f"No previous tool call found for normalized_call: {normalized_call}")
+            
+            return tool_call
             
         except Exception as e:
             logger.error(f"Failed to retrieve previous tool call: {e}")
@@ -227,42 +261,64 @@ class DummyEventDB(EventDB):
         self.tool_calls = {}
     
     async def log_event(self, event_type: str, request_id: str, **kwargs) -> None:
-        event = {
-            'timestamp': time.time(),
-            'event_type': event_type,
-            'request_id': request_id,
-            'event_data': kwargs
-        }
-        self.events.append(event)
-        logger.debug(f"[DummyDB] Logged event: {event}")
+        try:
+            event = {
+                'timestamp': time.time(),
+                'event_type': event_type,
+                'request_id': request_id,
+                'event_data': kwargs
+            }
+            self.events.append(event)
+            logger.info(f"[DummyDB] Successfully logged event: {event_type} for request_id: {request_id}")
+        except Exception as e:
+            logger.error(f"[DummyDB] Failed to log event: {e}")
     
     async def get_events_by_request_id(self, request_id: str) -> List[Dict[str, Any]]:
-        return [event for event in self.events if event['request_id'] == request_id]
+        try:
+            events = [event for event in self.events if event['request_id'] == request_id]
+            logger.info(f"[DummyDB] Successfully retrieved {len(events)} events for request_id: {request_id}")
+            return events
+        except Exception as e:
+            logger.error(f"[DummyDB] Failed to retrieve events: {e}")
+            return []
     
     async def check_and_log_tool_call(self, normalized_call: str, function_name: str, arguments: Dict[str, Any], 
                                      request_id: str, branch_id: str = "main") -> bool:
         """Check if a tool call exists and log it if not. Return True if it existed before."""
-        if normalized_call in self.tool_calls:
-            # Increment occurrence count
-            self.tool_calls[normalized_call]['occurrence_count'] += 1
-            logger.debug(f"[DummyDB] Duplicate tool call detected: {normalized_call}")
-            return True
-        else:
-            # Add new tool call
-            self.tool_calls[normalized_call] = {
-                'normalized_call': normalized_call,
-                'function_name': function_name,
-                'arguments': arguments,
-                'first_occurrence_time': time.time(),
-                'first_occurrence_request_id': request_id,
-                'occurrence_count': 1
-            }
-            logger.debug(f"[DummyDB] New tool call logged: {normalized_call}")
+        try:
+            if normalized_call in self.tool_calls:
+                # Increment occurrence count
+                self.tool_calls[normalized_call]['occurrence_count'] += 1
+                logger.info(f"[DummyDB] Successfully found and incremented existing tool call: {function_name} for normalized_call: {normalized_call}")
+                return True
+            else:
+                # Add new tool call
+                self.tool_calls[normalized_call] = {
+                    'normalized_call': normalized_call,
+                    'function_name': function_name,
+                    'arguments': arguments,
+                    'first_occurrence_time': time.time(),
+                    'first_occurrence_request_id': request_id,
+                    'occurrence_count': 1
+                }
+                logger.info(f"[DummyDB] Successfully logged new tool call: {function_name} for normalized_call: {normalized_call}, request_id: {request_id}")
+                return False
+        except Exception as e:
+            logger.error(f"[DummyDB] Failed to check and log tool call: {e}")
             return False
     
     async def get_previous_tool_call(self, normalized_call: str) -> Optional[Dict[str, Any]]:
         """Get information about a previous occurrence of a tool call."""
-        return self.tool_calls.get(normalized_call)
+        try:
+            tool_call = self.tool_calls.get(normalized_call)
+            if tool_call:
+                logger.info(f"[DummyDB] Successfully retrieved previous tool call: {tool_call['function_name']} for normalized_call: {normalized_call}")
+            else:
+                logger.info(f"[DummyDB] No previous tool call found for normalized_call: {normalized_call}")
+            return tool_call
+        except Exception as e:
+            logger.error(f"[DummyDB] Failed to retrieve previous tool call: {e}")
+            return None
 
 
 if SQLALCHEMY_AVAILABLE:
@@ -319,6 +375,7 @@ if SQLALCHEMY_AVAILABLE:
                     expire_on_commit=False
                 )
                 
+                logger.info(f"Successfully initialized SQLAlchemy database connection to {self.db_url}")
             except Exception as e:
                 logger.error(f"Failed to initialize database: {e}")
                 raise
@@ -337,6 +394,7 @@ if SQLALCHEMY_AVAILABLE:
                             event_data=event_data
                         ))
                 
+                logger.info(f"Successfully logged event: {event_type} for request_id: {request_id}")
             except Exception as e:
                 logger.error(f"Failed to log event: {e}")
         
@@ -357,6 +415,7 @@ if SQLALCHEMY_AVAILABLE:
                     event_dict['event_data'] = json.loads(event_dict['event_data'])
                     events.append(event_dict)
                 
+                logger.info(f"Successfully retrieved {len(events)} events for request_id: {request_id}")
                 return events
                 
             except Exception as e:
@@ -385,6 +444,7 @@ if SQLALCHEMY_AVAILABLE:
                                 text("UPDATE tool_calls SET occurrence_count = occurrence_count + 1 WHERE id = :id"),
                                 {"id": existing.id}
                             )
+                            logger.info(f"Successfully found and incremented existing tool call: {function_name} for normalized_call: {normalized_call}")
                             return True
                         else:
                             # Insert new tool call
@@ -395,6 +455,7 @@ if SQLALCHEMY_AVAILABLE:
                                 first_occurrence_time=timestamp,
                                 first_occurrence_request_id=request_id
                             ))
+                            logger.info(f"Successfully logged new tool call: {function_name} for normalized_call: {normalized_call}, request_id: {request_id}")
                             return False
                 
             except Exception as e:
@@ -415,8 +476,11 @@ if SQLALCHEMY_AVAILABLE:
                 if row:
                     tool_call = dict(row._mapping)
                     tool_call['arguments'] = json.loads(tool_call['arguments'])
+                    logger.info(f"Successfully retrieved previous tool call: {tool_call['function_name']} for normalized_call: {normalized_call}")
                     return tool_call
-                return None
+                else:
+                    logger.info(f"No previous tool call found for normalized_call: {normalized_call}")
+                    return None
                 
             except Exception as e:
                 logger.error(f"Failed to retrieve previous tool call: {e}")

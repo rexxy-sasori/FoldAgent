@@ -36,22 +36,33 @@ Note: The Local LLM component uses the official `vllm/vllm-openai` image, so no 
 ### 1. Create Namespace
 
 ```bash
-kubectl apply -f foldagent-namespace.yaml
+# Create the namespace (if it doesn't exist)
+kubectl create namespace liuyunxin
 ```
 
-### 2. Deploy Search Server
+### 2. Deploy PostgreSQL Database (Recommended for Production)
+
+```bash
+# Deploy PostgreSQL secrets
+kubectl apply -f postgresql-secrets.yaml
+
+# Deploy PostgreSQL StatefulSet with persistent storage
+kubectl apply -f postgresql-statefulset.yaml
+```
+
+### 3. Deploy Search Server
 
 ```bash
 kubectl apply -f search-server-deployment.yaml
 ```
 
-### 3. Deploy Local LLM
+### 4. Deploy Local LLM
 
 ```bash
 kubectl apply -f local-llm-deployment.yaml
 ```
 
-### 4. Run Evaluation
+### 5. Run Evaluation
 
 The evaluation is configured as a Kubernetes Job for one-time execution (recommended):
 
@@ -135,6 +146,35 @@ kubectl delete pvc foldagent-results-pvc -n liuyunxin
 - `CUDA_VISIBLE_DEVICES`: GPU devices to use (default: 0)
 - `OPENAI_API_KEY`: API key for OpenAI (dummy value for local LLM)
 - `OPENAI_BASE_URL`: Base URL for OpenAI API (local LLM URL)
+- `DATABASE_URL`: Database connection URL (PostgreSQL recommended for production)
+
+### Database Configuration
+
+By default, FoldAgent uses SQLite for database storage. For production deployments, we recommend using PostgreSQL for better scalability and performance.
+
+#### Using PostgreSQL (Recommended)
+
+1. Deploy PostgreSQL using the provided deployment files as shown above
+2. Update the `DATABASE_URL` environment variable in your deployment files:
+
+```yaml
+env:
+- name: DATABASE_URL
+  valueFrom:
+    secretKeyRef:
+      name: postgresql-secrets
+      key: DATABASE_URL
+```
+
+#### Default SQLite Configuration
+
+If no `DATABASE_URL` is provided, FoldAgent will use SQLite with the default path `./events.db`. You can customize the SQLite path:
+
+```yaml
+env:
+- name: DATABASE_PATH
+  value: /path/to/events.db
+```
 
 ### Resource Requirements
 

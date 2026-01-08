@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
       - name: search-server
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:v0.41 
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:v0.48 
         # command: ["sleep", "infinity"]
         command: ["bash", "-c"]
         args:
@@ -63,6 +63,11 @@ spec:
           value: "http://192.168.12.70:9181/repository/pypi-proxy/simple/"
         - name: PIP_TRUSTED_HOST
           value: "192.168.12.70"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secrets
+              key: DATABASE_URL
         volumeMounts:
         - name: gpfshome
           mountPath: /root

@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudbeaver
+  namespace: liuyunxin
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloudbeaver
+  template:
+    metadata:
+      labels:
+        app: cloudbeaver
+    spec:
+      containers:
+      - name: cloudbeaver
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/dbeaver/cloudbeaver:latest-linux-amd64
+        ports:
+        - containerPort: 8978
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        volumeMounts:
+        - name: cloudbeaver-data
+          mountPath: /opt/cloudbeaver/workspace
+      volumes:
+      - name: cloudbeaver-data
+        persistentVolumeClaim:
+          claimName: cloudbeaver-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloudbeaver
+  namespace: liuyunxin
+spec:
+  selector:
+    app: cloudbeaver
+  ports:
+  - port: 80
+    targetPort: 8978
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cloudbeaver-pvc
+  namespace: liuyunxin
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  storageClassName: rancher-local-path

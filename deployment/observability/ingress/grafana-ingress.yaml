@@ -34,7 +34,7 @@ spec:
               service:
                 name: sglang
                 port:
-                  number: 8080k
+                  number: 8080
           - path: /dcgm/(.*)
             pathType: ImplementationSpecific
             backend:
@@ -49,6 +49,13 @@ spec:
                 name: elasticsearch
                 port:
                   number: 9200
+          - path: /postgresql/(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: postgresql
+                port:
+                  number: 5432
           - path: /(.*)
             pathType: Prefix
             backend:

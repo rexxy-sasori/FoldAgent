@@ -18,6 +18,8 @@ from .prompts import BRANCH_MESSAGE_SEARCH, BRANCH_MESSAGE, SUMMARY_PROMPT_CODE,
 from .verifier import judge_scope
 from .db_client import log_event
 
+logger = logging.getLogger(__name__)
+
 
 def print_chat(chat):
     chat_str = ""
@@ -58,7 +60,10 @@ async def process_item(
         LLMClass=CallLLM,
 ) -> DataProto:
     start_time = time.time()
-    request_id = str(uuid.uuid4())  # Generate unique request ID
+    # Generate request_id based on item UID and agent type for consistent comparison
+    item_uid = item.non_tensor_batch['uid'][0] if 'uid' in item.non_tensor_batch else str(uuid.uuid4())
+    run_id = uuid.uuid4().hex[:8]  # Short unique identifier for this run
+    request_id = f"{item_uid}_fold_agent_{run_id}"
     logger.info(f'[REQUEST {request_id}] Starting process_item')
     
     tokenizer = context.tokenizer
@@ -121,6 +126,12 @@ async def process_item(
     iteration = 0
     mask_rollout = True  # If True then no grad update on this traj
     session_message = []
+    # Global execution registry to track tool calls across agents
+    global_execution_registry = set()
+    # Track information stalls
+    information_stalls = []
+    # Track branch returns for correlation analysis
+    branch_returns = []
     while iteration < max_turn:
         if time.time() - session_start_time > session_timeout:
             logger.info('[SESSION] Session Timeout')
@@ -157,6 +168,36 @@ async def process_item(
         if response is None:
             break
 
+        # Check for information stall phrases in the response
+        stall_patterns = [
+            r"i don't have the info",
+            r"i need to check again",
+            r"the previous summary was unclear",
+            r"i don't have the information",
+            r"i need more information",
+            r"i'm not sure",
+            r"i can't determine",
+            r"i don't know",
+            r"the information is not available",
+            r"i need to verify",
+            r"i need to confirm",
+            r"this is unclear",
+            r"this is confusing"
+        ]
+        combined_pattern = re.compile('|'.join(stall_patterns), re.IGNORECASE)
+        matches = combined_pattern.findall(response)
+        if matches:
+            # Record information stall
+            stall_info = {
+                'iteration': iteration,
+                'timestamp': time.time(),
+                'matched_phrases': matches,
+                'response_excerpt': response[:200],
+                'has_folded_info': len(branch_returns) > 0
+            }
+            information_stalls.append(stall_info)
+            logger.info(f'[INFO_STALL] {request_id} Iteration {iteration}: {matches}')
+
         session_message.append({'role': 'assistant', 'content': response})
         fn_call = extract_fn_call(response)
         if fn_call is not None and fn_call['function'] == 'branch':
@@ -184,12 +225,23 @@ async def process_item(
                 branches.append(agent_name)
                 branch_tasks[agent_name] = message_to_branch
                 history = agent['main'].messages()
-                agent[agent_name] = Agent(llm_client, history, tokenizer, config, prompt_turn=prompt_turn, agent_type="branch")
+                agent[agent_name] = Agent(llm_client, history, tokenizer, config, prompt_turn=prompt_turn, agent_type="branch", agent_name=agent_name)
                 branch_prompt_formatted = branch_prompt.format(message=message_to_branch)
                 agent[agent_name].append({'role': 'user', 'content': branch_prompt_formatted})
                 logger.debug(f'[REQUEST {request_id}] Calling branch agent {agent_name} react')
+                
+                # Track tool calls during branch execution
+                def branch_run_action_wrapper(response):
+                    # Extract and log tool calls to global registry
+                    fn_call = extract_fn_call(response)
+                    if fn_call:
+                        tool_signature = f"{fn_call['function']}({str(fn_call['arguments'])})"
+                        global_execution_registry.add(tool_signature)
+                        logger.debug(f'[BRANCH_TOOL] {agent_name}: {tool_signature}')
+                    return run_action(env, response, request_id=request_id)
+                
                 agent_return = await agent[agent_name].react(
-                    partial(run_action, env, request_id=request_id),
+                    partial(branch_run_action_wrapper),
                     max_turn=max_turn,
                     max_tokens=getattr(config.plugin, "branch_len", None),
                     session_timeout=session_timeout - time.time() + session_start_time,
@@ -203,6 +255,14 @@ async def process_item(
                 iteration += agent_return['iteration']
                 last_response = agent_return['last_response']
                 session_message.extend(agent[agent_name].messages()[len(history):])
+                
+                # Record branch return information for analysis
+                branch_returns.append({
+                    'agent_name': agent_name,
+                    'timestamp': time.time(),
+                    'iteration': iteration,
+                    'context_length': len(agent[agent_name].context())
+                })
                 fn_call = extract_fn_call(last_response)
                 branch_message = None
                 if fn_call is not None and fn_call['function'] == 'return':
@@ -258,6 +318,24 @@ async def process_item(
                 branch_return[agent_name] = observation
                 # print(observation)
         else:
+            # Extract and check for redundant tool calls in main agent
+            fn_call = extract_fn_call(response)
+            if fn_call:
+                tool_signature = f"{fn_call['function']}({str(fn_call['arguments'])})"
+                # Check for redundant tool execution
+                if tool_signature in global_execution_registry:
+                    logger.warning(f'[BAD_FOLD_DETECTION] {request_id} Main Agent re-executing redundant tool: {tool_signature}')
+                    await log_event(
+                        event_type='BAD_FOLD_DETECTION',
+                        request_id=request_id,
+                        tool_signature=tool_signature,
+                        iteration=iteration,
+                        agent_type='main',
+                        timestamp=time.time()
+                    )
+                else:
+                    global_execution_registry.add(tool_signature)
+            
             observation = await run_action(env, response, request_id=request_id)
             if observation is None:
                 mask_rollout = False
@@ -308,6 +386,24 @@ async def process_item(
     env.stats['is_branch'] = int(len(agent) > 1)
     env.stats['branch_success'] = int(int(len(agent) > 1) * score[1])
     env.stats['use_all_branch'] = int(len(branches) + 1 > max_session)
+    
+    # Add metrics for information stalls and bad folds
+    env.stats['information_stall_count'] = len(information_stalls)
+    env.stats['bad_fold_detection_count'] = 0  # Will be updated from log events
+    env.stats['branch_return_count'] = len(branch_returns)
+    
+    # Log information stall analysis
+    if information_stalls:
+        stalls_after_folds = sum(1 for stall in information_stalls if stall['has_folded_info'])
+        logger.info(f'[STALL_ANALYSIS] {request_id} Total stalls: {len(information_stalls)}, Stalls after folds: {stalls_after_folds}')
+        await log_event(
+            event_type='stall_analysis',
+            request_id=request_id,
+            total_stalls=len(information_stalls),
+            stalls_after_folds=stalls_after_folds,
+            branch_return_count=len(branch_returns),
+            stalls=information_stalls
+        )
 
     if getattr(env, 'is_finish', False) or getattr(env, 'finish', False):
         mask_rollout = False

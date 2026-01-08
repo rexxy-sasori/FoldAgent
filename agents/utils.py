@@ -187,7 +187,10 @@ class CallLLM:  # Call policy LLM in RL env
             return None
 
         uid = kwargs.pop('uid', self.meta_info.get('uid', None))
-        agent_type = kwargs.pop('agent_type', self.agent_type)
+        # Get role agent_type from kwargs (main/branch) and preserve original client agent_type
+        role_agent_type = kwargs.pop('agent_type', self.agent_type)
+        source_agent_type = self.agent_type  # Original client agent_type (fold_agent/react_agent)
+        agent_name = kwargs.pop('agent_name', role_agent_type)
 
         request_data = {
             "model": "rollout",
@@ -213,9 +216,9 @@ class CallLLM:  # Call policy LLM in RL env
                     "model": "rollout",
                     "request_data": request_data,
                     "attempt": attempt + 1,
-                    "agent_type": self.agent_type
+                    "agent_type": source_agent_type
                 }
-                logger.debug(f"[CallLLM API ({self.agent_type})] Full request: {json.dumps(log_request_data)}")
+                logger.debug(f"[CallLLM API ({source_agent_type}/{role_agent_type})] Full request: {json.dumps(log_request_data)}")
                 # Configure proxy settings from environment variables
                 proxy = os.environ.get('http_proxy') or os.environ.get('HTTP_PROXY')
                 https_proxy = os.environ.get('https_proxy') or os.environ.get('HTTPS_PROXY')
@@ -241,10 +244,11 @@ class CallLLM:  # Call policy LLM in RL env
                 await log_event(
                     event_type='llm_request',
                     request_id=request_id,
-                    agent_type=agent_type,
+                    source_agent_type=source_agent_type,
+                    agent_type=role_agent_type,
                     model="rollout",
                     timestamp=start_time,
-                    branch_context=agent_type  # Indicates "main" or "branch" agent
+                    branch_context=agent_name  # Now shows specific agent name
                 )
                 
                 async with session.post(url=self.url,
@@ -261,8 +265,8 @@ class CallLLM:  # Call policy LLM in RL env
                     
                     # Log response details with timing
                     request_id = self.meta_info.get('request_id', 'unknown')
-                    logger.debug(f"[CallLLM API ({self.agent_type})] Response status: {response.status}, completion: {json.dumps(completion)}")
-                    logger.info(f"[CallLLM Timing ({self.agent_type})] Request ID: {request_id}, Duration: {duration:.2f}s, Attempt: {attempt + 1}")
+                    logger.debug(f"[CallLLM API ({source_agent_type}/{role_agent_type})] Response status: {response.status}, completion: {json.dumps(completion)}")
+                    logger.info(f"[CallLLM Timing ({source_agent_type}/{role_agent_type})] Request ID: {request_id}, Duration: {duration:.2f}s, Attempt: {attempt + 1}")
                     
                     # Log LLM response to database with usage information
                     usage = completion.get('usage', {})
@@ -278,19 +282,20 @@ class CallLLM:  # Call policy LLM in RL env
                         cached_tokens = usage.get('prompt_tokens_details', {}).get('cached_tokens', 0)
                     
                     await log_event(
-                        event_type='llm_response',
-                        request_id=request_id,
-                        agent_type=agent_type,
-                        model="rollout",
-                        start_time=start_time,
-                        end_time=end_time,
-                        duration=duration,
-                        prompt_tokens=usage.get('prompt_tokens', 0),
-                        completion_tokens=usage.get('completion_tokens', 0),
-                        cached_tokens=cached_tokens,
-                        total_tokens=usage.get('total_tokens', 0),
-                        branch_context=agent_type  # Indicates "main" or "branch" agent
-                    )
+                    event_type='llm_response',
+                    request_id=request_id,
+                    source_agent_type=source_agent_type,
+                    agent_type=role_agent_type,
+                    model="rollout",
+                    start_time=start_time,
+                    end_time=end_time,
+                    duration=duration,
+                    prompt_tokens=usage.get('prompt_tokens', 0),
+                    completion_tokens=usage.get('completion_tokens', 0),
+                    cached_tokens=cached_tokens,
+                    total_tokens=usage.get('total_tokens', 0),
+                    branch_context=agent_name  # Now shows specific agent name
+                )
                     
                     await session.close()
                     return completion
@@ -442,8 +447,10 @@ class CallAPI:  # Call external API
             return None
         messages = kwargs.get('messages') or decode_conversation(input_ids, self.tokenizer)[0]
 
-        # Get agent_type from kwargs if provided, otherwise use self.agent_type
-        agent_type = kwargs.pop('agent_type', self.agent_type)
+        # Get role agent_type from kwargs (main/branch) and preserve original client agent_type
+        role_agent_type = kwargs.pop('agent_type', self.agent_type)
+        source_agent_type = self.agent_type  # Original client agent_type (fold_agent/react_agent)
+        agent_name = kwargs.pop('agent_name', role_agent_type)
 
         # Log request details - use the same request_id from meta_info
         request_id = self.meta_info.get('request_id', f"callapi_{uuid.uuid4().hex[:8]}")
@@ -452,9 +459,9 @@ class CallAPI:  # Call external API
             "messages": messages[:2],  # Log first 2 messages to avoid too much verbosity
             "max_completion_tokens": max_tokens,
             "request_id": request_id,
-            "agent_type": agent_type
+            "agent_type": source_agent_type
         }
-        logger.debug(f"[CallAPI Request ({agent_type})] URL: {self.client.base_url if hasattr(self.client, 'base_url') else 'https://api.openai.com/v1'}, Request: {json.dumps(request_data, ensure_ascii=False)}")
+        logger.debug(f"[CallAPI Request ({source_agent_type}/{role_agent_type})] URL: {self.client.base_url if hasattr(self.client, 'base_url') else 'https://api.openai.com/v1'}, Request: {json.dumps(request_data, ensure_ascii=False)}")
 
         for attempt in range(5):
             try:
@@ -465,10 +472,11 @@ class CallAPI:  # Call external API
                 await log_event(
                     event_type='llm_request',
                     request_id=request_id,
-                    agent_type=agent_type,
+                    source_agent_type=source_agent_type,
+                    agent_type=role_agent_type,
                     model=self.model,
                     timestamp=start_time,
-                    branch_context=agent_type  # Indicates "main" or "branch" agent
+                    branch_context=agent_name  # Now shows specific agent name
                 )
                 
                 # Use the same request_id for the API call that was logged in the request
@@ -530,8 +538,8 @@ class CallAPI:  # Call external API
                     "request_id": actual_request_id,  # Use consistent request ID
                     "duration": f"{duration:.2f}s"
                 }
-                logger.info(f"[CallAPI Response ({self.agent_type})] {json.dumps(response_data)}")
-                logger.info(f"[CallAPI Timing ({self.agent_type})] Request ID: {actual_request_id}, Duration: {duration:.2f}s, Model: {self.model}, Attempt: {attempt + 1}")
+                logger.info(f"[CallAPI Response ({source_agent_type}/{role_agent_type})] {json.dumps(response_data)}")
+                logger.info(f"[CallAPI Timing ({source_agent_type}/{role_agent_type})] Request ID: {actual_request_id}, Duration: {duration:.2f}s, Model: {self.model}, Attempt: {attempt + 1}")
                 
                 # Get text content and encode for token count
                 text = response.choices[0].message.content or ""
@@ -542,7 +550,8 @@ class CallAPI:  # Call external API
                 await log_event(
                     event_type='llm_response',
                     request_id=request_id,
-                    agent_type=agent_type,
+                    source_agent_type=source_agent_type,
+                    agent_type=role_agent_type,
                     model=self.model,
                     start_time=start_time,
                     end_time=end_time,
@@ -551,7 +560,7 @@ class CallAPI:  # Call external API
                     completion_tokens=usage.completion_tokens if usage else len(text_ids),
                     cached_tokens=cached_tokens,
                     total_tokens=usage.total_tokens if usage else 0,
-                    branch_context=agent_type  # Indicates "main" or "branch" agent
+                    branch_context=agent_name  # Now shows specific agent name
                 )
 
                 return {
@@ -581,10 +590,10 @@ class CallAPI:  # Call external API
                     "request_id": request_id  # Use client-generated for errors
                 }
                 if attempt == 4:
-                    logger.error(f"[CallAPI Response ({self.agent_type})] {json.dumps(error_data)}")
+                    logger.error(f"[CallAPI Response ({source_agent_type}/{role_agent_type})] {json.dumps(error_data)}")
                     return None
                 wait_time = 2 ** attempt
-                logger.warning(f"[CallAPI Retry ({self.agent_type})] {json.dumps(error_data)}, retrying in {wait_time}s...")
+                logger.warning(f"[CallAPI Retry ({source_agent_type}/{role_agent_type})] {json.dumps(error_data)}, retrying in {wait_time}s...")
                 await asyncio.sleep(wait_time)
         return None
 
@@ -749,12 +758,13 @@ class AgentContext:
 
 class Agent(AgentContext):
     # Agent utils
-    def __init__(self, llm_client, conversations, tokenizer, config, prompt_turn=2, agent_type="main"):
+    def __init__(self, llm_client, conversations, tokenizer, config, prompt_turn=2, agent_type="main", agent_name=None):
         super().__init__(conversations, tokenizer, config, prompt_turn=prompt_turn)
         self.llm_client = llm_client
         self.retry_cjk = getattr(config.plugin, "retry_cjk", 0)
         self.info_cache = {}
         self.agent_type = agent_type
+        self.agent_name = agent_name if agent_name else agent_type
 
     async def step(self, max_new_tokens=None, retry_cjk=0):
         prompt = self.context()
@@ -762,14 +772,14 @@ class Agent(AgentContext):
         if max_new_tokens is not None:
             max_len = min(len(prompt) + max_new_tokens, 131072)
         completion = await self.llm_client.create_completion(
-            prompt, uid=self.context_uid, max_len=max_len, messages=self.chat, agent_type=self.agent_type)
+            prompt, uid=self.context_uid, max_len=max_len, messages=self.chat, agent_type=self.agent_type, agent_name=self.agent_name)
         if completion is None:
             return None
         if max(self.retry_cjk, retry_cjk):
             if is_weird(completion["choices"][0]["message"]["content"]):
                 for _ in range(int(max(self.retry_cjk, retry_cjk))):
                     completion = await self.llm_client.create_completion(
-                        prompt, uid=self.context_uid, max_len=max_len, messages=self.chat, agent_type=self.agent_type)
+                        prompt, uid=self.context_uid, max_len=max_len, messages=self.chat, agent_type=self.agent_type, agent_name=self.agent_name)
                     if is_weird(completion["choices"][0]["message"]["content"]):
                         continue
                     else:
@@ -806,12 +816,27 @@ class Agent(AgentContext):
             
             # Log information stall event
             for matched_phrase in actual_matches:
+                # Determine if this agent has received folded branch information
+                has_folded_information = False
+                if self.agent_type == "main" and len(self.chat) > 2:
+                    # Check if there are any branch return messages in the conversation history
+                    has_folded_information = any("Branch has finished its task" in msg.get('content', '') for msg in self.chat)
+                
+                # Check how many branch returns have occurred before this stall
+                branch_return_count = 0
+                if self.agent_type == "main":
+                    branch_return_count = sum(1 for msg in self.chat if "Branch has finished its task" in msg.get('content', ''))
+                
                 await log_event(
                     event_type='INFORMATION_STALL',
                     request_id=self.llm_client.meta_info.get('request_id', 'unknown'),
                     timestamp=time.time(),
                     matched_phrase=matched_phrase,
                     conversation_context=f"{self.agent_type} agent step",
+                    agent_type=self.agent_type,
+                    agent_name=self.agent_name,
+                    has_folded_information=has_folded_information,
+                    branch_return_count=branch_return_count,
                     confidence_score=1.0,  # Static confidence for exact regex matches
                     response_excerpt=response[:200] + "..." if len(response) > 200 else response
                 )

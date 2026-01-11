@@ -241,9 +241,11 @@ class CallLLM:  # Call policy LLM in RL env
                 
                 # Log LLM request to database
                 request_id = self.meta_info.get('request_id', 'unknown')
+                run_id = self.meta_info.get('run_id', 'unknown')
                 await log_event(
                     event_type='llm_request',
                     request_id=request_id,
+                    run_id=run_id,
                     source_agent_type=source_agent_type,
                     agent_type=role_agent_type,
                     model="rollout",
@@ -284,6 +286,7 @@ class CallLLM:  # Call policy LLM in RL env
                     await log_event(
                     event_type='llm_response',
                     request_id=request_id,
+                    run_id=run_id,
                     source_agent_type=source_agent_type,
                     agent_type=role_agent_type,
                     model="rollout",
@@ -469,9 +472,11 @@ class CallAPI:  # Call external API
                 start_time = time.time()
                 
                 # Log LLM request to database
+                run_id = self.meta_info.get('run_id', 'unknown')
                 await log_event(
                     event_type='llm_request',
                     request_id=request_id,
+                    run_id=run_id,
                     source_agent_type=source_agent_type,
                     agent_type=role_agent_type,
                     model=self.model,
@@ -547,9 +552,11 @@ class CallAPI:  # Call external API
                 
                 # Log LLM response to database with usage information
                 usage = response.usage
+                run_id = self.meta_info.get('run_id', 'unknown')
                 await log_event(
                     event_type='llm_response',
                     request_id=request_id,
+                    run_id=run_id,
                     source_agent_type=source_agent_type,
                     agent_type=role_agent_type,
                     model=self.model,
@@ -830,6 +837,7 @@ class Agent(AgentContext):
                 await log_event(
                     event_type='INFORMATION_STALL',
                     request_id=self.llm_client.meta_info.get('request_id', 'unknown'),
+                    run_id=self.llm_client.meta_info.get('run_id', 'unknown'),
                     timestamp=time.time(),
                     matched_phrase=matched_phrase,
                     conversation_context=f"{self.agent_type} agent step",
@@ -923,6 +931,7 @@ class TaskContext:
     server_host: str
     server_port: int
     is_train: bool
+    run_id: str = 'unknown'
     tokenizer: Optional[PreTrainedTokenizer] = None
 
 
@@ -952,12 +961,15 @@ async def run_action(env, response, request_id=None):
                 normalized_call = f"{action}:{json.dumps(arguments, sort_keys=True)}"
                 
                 # Check if this tool call has been made before
+                # Get run_id from environment if available
+                run_id = getattr(env, 'run_id', 'unknown')
                 existed = await global_event_db.check_and_log_tool_call(
                     normalized_call=normalized_call,
                     function_name=action,
                     arguments=arguments,
                     request_id=request_id,
-                    branch_id=getattr(env, 'branch_id', 'main')
+                    branch_id=getattr(env, 'branch_id', 'main'),
+                    run_id=run_id
                 )
                 
                 # Log inefficiency if duplicate tool call detected
@@ -968,6 +980,7 @@ async def run_action(env, response, request_id=None):
                         await log_event(
                             event_type='FOLD_INNEFICIENCY',
                             request_id=request_id,
+                            run_id=run_id,
                             timestamp=time.time(),
                             tool_call=normalized_call,
                             function_name=action,

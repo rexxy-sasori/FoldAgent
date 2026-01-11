@@ -39,24 +39,29 @@ logger = logging.getLogger(__name__)
 
 class EventDB(ABC):
     @abstractmethod
-    async def log_event(self, event_type: str, request_id: str, **kwargs) -> None:
+    async def log_event(self, event_type: str, request_id: str, run_id: str = 'unknown', **kwargs) -> None:
         """Log an event to the database."""
         pass
     
     @abstractmethod
-    async def get_events_by_request_id(self, request_id: str) -> List[Dict[str, Any]]:
-        """Retrieve all events for a specific request ID."""
+    async def get_events_by_request_id(self, request_id: str, run_id: str = None) -> List[Dict[str, Any]]:
+        """Retrieve all events for a specific request ID, optionally filtered by run_id."""
         pass
     
     @abstractmethod
     async def check_and_log_tool_call(self, normalized_call: str, function_name: str, arguments: Dict[str, Any], 
-                                     request_id: str, branch_id: str = "main") -> bool:
+                                     request_id: str, branch_id: str = "main", run_id: str = "unknown") -> bool:
         """Check if a tool call exists and log it if not. Return True if it existed before."""
         pass
     
     @abstractmethod
     async def get_previous_tool_call(self, normalized_call: str) -> Optional[Dict[str, Any]]:
         """Get information about a previous occurrence of a tool call."""
+        pass
+    
+    @abstractmethod
+    async def get_events_by_run_id(self, run_id: str) -> List[Dict[str, Any]]:
+        """Retrieve all events for a specific run_id."""
         pass
 
 
@@ -78,13 +83,17 @@ class SQLiteEventDB(EventDB):
                     timestamp REAL,
                     event_type TEXT,
                     request_id TEXT,
+                    run_id TEXT,
                     event_data TEXT
                 )
             ''')
             
-            # Create index on request_id for fast lookup
+            # Create indexes for fast lookup
             cursor.execute('''
                 CREATE INDEX IF NOT EXISTS idx_events_request_id ON events (request_id)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_events_run_id ON events (run_id)
             ''')
             
             # Create tool_calls table to track all unique tool calls across branches
@@ -96,6 +105,7 @@ class SQLiteEventDB(EventDB):
                     arguments TEXT,
                     first_occurrence_time REAL,
                     first_occurrence_request_id TEXT,
+                    first_occurrence_run_id TEXT,
                     occurrence_count INTEGER DEFAULT 1
                 )
             ''')
@@ -112,9 +122,11 @@ class SQLiteEventDB(EventDB):
             logger.error(f"Failed to initialize SQLite database tables at {self.db_path}: {e}")
             raise
     
-    async def log_event(self, event_type: str, request_id: str, **kwargs) -> None:
+    async def log_event(self, event_type: str, request_id: str, run_id: str = 'unknown', **kwargs) -> None:
         """Log an event to SQLite database."""
         try:
+            # Generate timestamp when the function is called, not when executed
+            timestamp = time.time()
             event_data = json.dumps(kwargs, ensure_ascii=False)
             
             # Use synchronous sqlite3 in a thread-safe way
@@ -122,8 +134,8 @@ class SQLiteEventDB(EventDB):
                 conn = sqlite3.connect(self.db_path)
                 with conn:
                     conn.execute(
-                        "INSERT INTO events (timestamp, event_type, request_id, event_data) VALUES (?, ?, ?, ?)",
-                        (time.time(), event_type, request_id, event_data)
+                        "INSERT INTO events (timestamp, event_type, request_id, run_id, event_data) VALUES (?, ?, ?, ?, ?)",
+                        (timestamp, event_type, request_id, run_id, event_data)
                     )
             
             # Run synchronous code in executor
@@ -134,17 +146,23 @@ class SQLiteEventDB(EventDB):
         except Exception as e:
             logger.error(f"Failed to log event: {e}")
     
-    async def get_events_by_request_id(self, request_id: str) -> List[Dict[str, Any]]:
-        """Retrieve all events for a specific request ID."""
+    async def get_events_by_request_id(self, request_id: str, run_id: str = None) -> List[Dict[str, Any]]:
+        """Retrieve all events for a specific request ID, optionally filtered by run_id."""
         try:
             def sync_query():
                 conn = sqlite3.connect(self.db_path)
                 conn.row_factory = sqlite3.Row
                 with conn:
-                    cursor = conn.execute(
-                        "SELECT * FROM events WHERE request_id = ? ORDER BY timestamp",
-                        (request_id,)
-                    )
+                    if run_id:
+                        cursor = conn.execute(
+                            "SELECT * FROM events WHERE request_id = ? AND run_id = ? ORDER BY timestamp",
+                            (request_id, run_id)
+                        )
+                    else:
+                        cursor = conn.execute(
+                            "SELECT * FROM events WHERE request_id = ? ORDER BY timestamp",
+                            (request_id,)
+                        )
                     rows = cursor.fetchall()
                 
                 events = []
@@ -166,7 +184,7 @@ class SQLiteEventDB(EventDB):
             return []
     
     async def check_and_log_tool_call(self, normalized_call: str, function_name: str, arguments: Dict[str, Any], 
-                                     request_id: str, branch_id: str = "main") -> bool:
+                                     request_id: str, branch_id: str = "main", run_id: str = "unknown") -> bool:
         """Check if a tool call exists and log it if not. Return True if it existed before."""
         try:
             args_str = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
@@ -178,7 +196,7 @@ class SQLiteEventDB(EventDB):
                 
                 # Check if the tool call already exists
                 cursor.execute(
-                    "SELECT id, first_occurrence_time, first_occurrence_request_id FROM tool_calls WHERE normalized_call = ?",
+                    "SELECT id, first_occurrence_time, first_occurrence_request_id, first_occurrence_run_id FROM tool_calls WHERE normalized_call = ?",
                     (normalized_call,)
                 )
                 existing = cursor.fetchone()
@@ -196,8 +214,8 @@ class SQLiteEventDB(EventDB):
                     # Insert new tool call
                     cursor.execute(
                         '''INSERT INTO tool_calls (normalized_call, function_name, arguments, first_occurrence_time, 
-                           first_occurrence_request_id) VALUES (?, ?, ?, ?, ?)''',
-                        (normalized_call, function_name, args_str, timestamp, request_id)
+                           first_occurrence_request_id, first_occurrence_run_id) VALUES (?, ?, ?, ?, ?, ?)''',
+                        (normalized_call, function_name, args_str, timestamp, request_id, run_id)
                     )
                     conn.commit()
                     conn.close()
@@ -251,6 +269,38 @@ class SQLiteEventDB(EventDB):
         except Exception as e:
             logger.error(f"Failed to retrieve previous tool call: {e}")
             return None
+            
+    async def get_events_by_run_id(self, run_id: str) -> List[Dict[str, Any]]:
+        """Retrieve all events for a specific run_id."""
+        try:
+            def sync_query():
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                with conn:
+                    cursor = conn.execute(
+                        "SELECT * FROM events WHERE run_id = ? ORDER BY timestamp",
+                        (run_id,)
+                    )
+                    rows = cursor.fetchall()
+                
+                events = []
+                for row in rows:
+                    event_dict = dict(row)
+                    event_dict['event_data'] = json.loads(event_dict['event_data'])
+                    events.append(event_dict)
+                
+                return events
+            
+            # Run synchronous code in executor
+            loop = asyncio.get_running_loop()
+            events = await loop.run_in_executor(None, sync_query)
+            
+            logger.info(f"Successfully retrieved {len(events)} events for run_id: {run_id}")
+            return events
+            
+        except Exception as e:
+            logger.error(f"Failed to retrieve events by run_id: {e}")
+            return []
 
 
 class DummyEventDB(EventDB):
@@ -260,30 +310,36 @@ class DummyEventDB(EventDB):
         self.events = []
         self.tool_calls = {}
     
-    async def log_event(self, event_type: str, request_id: str, **kwargs) -> None:
+    async def log_event(self, event_type: str, request_id: str, run_id: str = 'unknown', **kwargs) -> None:
         try:
+            # Generate timestamp when the function is called
+            timestamp = time.time()
             event = {
-                'timestamp': time.time(),
+                'timestamp': timestamp,
                 'event_type': event_type,
                 'request_id': request_id,
+                'run_id': run_id,
                 'event_data': kwargs
             }
             self.events.append(event)
-            logger.info(f"[DummyDB] Successfully logged event: {event_type} for request_id: {request_id}")
+            logger.info(f"[DummyDB] Successfully logged event: {event_type} for request_id: {request_id}, run_id: {run_id}")
         except Exception as e:
             logger.error(f"[DummyDB] Failed to log event: {e}")
     
-    async def get_events_by_request_id(self, request_id: str) -> List[Dict[str, Any]]:
+    async def get_events_by_request_id(self, request_id: str, run_id: str = None) -> List[Dict[str, Any]]:
         try:
-            events = [event for event in self.events if event['request_id'] == request_id]
-            logger.info(f"[DummyDB] Successfully retrieved {len(events)} events for request_id: {request_id}")
+            if run_id:
+                events = [event for event in self.events if event['request_id'] == request_id and event.get('run_id') == run_id]
+            else:
+                events = [event for event in self.events if event['request_id'] == request_id]
+            logger.info(f"[DummyDB] Successfully retrieved {len(events)} events for request_id: {request_id}{f', run_id: {run_id}' if run_id else ''}")
             return events
         except Exception as e:
             logger.error(f"[DummyDB] Failed to retrieve events: {e}")
             return []
     
     async def check_and_log_tool_call(self, normalized_call: str, function_name: str, arguments: Dict[str, Any], 
-                                     request_id: str, branch_id: str = "main") -> bool:
+                                     request_id: str, branch_id: str = "main", run_id: str = "unknown") -> bool:
         """Check if a tool call exists and log it if not. Return True if it existed before."""
         try:
             if normalized_call in self.tool_calls:
@@ -299,9 +355,10 @@ class DummyEventDB(EventDB):
                     'arguments': arguments,
                     'first_occurrence_time': time.time(),
                     'first_occurrence_request_id': request_id,
+                    'first_occurrence_run_id': run_id,
                     'occurrence_count': 1
                 }
-                logger.info(f"[DummyDB] Successfully logged new tool call: {function_name} for normalized_call: {normalized_call}, request_id: {request_id}")
+                logger.info(f"[DummyDB] Successfully logged new tool call: {function_name} for normalized_call: {normalized_call}, request_id: {request_id}, run_id: {run_id}")
                 return False
         except Exception as e:
             logger.error(f"[DummyDB] Failed to check and log tool call: {e}")
@@ -319,6 +376,16 @@ class DummyEventDB(EventDB):
         except Exception as e:
             logger.error(f"[DummyDB] Failed to retrieve previous tool call: {e}")
             return None
+            
+    async def get_events_by_run_id(self, run_id: str) -> List[Dict[str, Any]]:
+        """Retrieve all events for a specific run_id."""
+        try:
+            events = [event for event in self.events if event['run_id'] == run_id]
+            logger.info(f"[DummyDB] Successfully retrieved {len(events)} events for run_id: {run_id}")
+            return events
+        except Exception as e:
+            logger.error(f"[DummyDB] Failed to retrieve events by run_id: {e}")
+            return []
 
 
 if SQLALCHEMY_AVAILABLE:
@@ -332,6 +399,7 @@ if SQLALCHEMY_AVAILABLE:
         timestamp = Column(Float, index=True)
         event_type = Column(String, index=True)
         request_id = Column(String, index=True)
+        run_id = Column(String, index=True)
         event_data = Column(Text)
     
     class ToolCall(Base):
@@ -344,6 +412,7 @@ if SQLALCHEMY_AVAILABLE:
         arguments = Column(Text)
         first_occurrence_time = Column(Float, index=True)
         first_occurrence_request_id = Column(String, index=True)
+        first_occurrence_run_id = Column(String, index=True)
         occurrence_count = Column(Integer, default=1)
 
     class SQLAlchemyEventDB(EventDB):
@@ -380,33 +449,42 @@ if SQLALCHEMY_AVAILABLE:
                 logger.error(f"Failed to initialize database: {e}")
                 raise
         
-        async def log_event(self, event_type: str, request_id: str, **kwargs) -> None:
+        async def log_event(self, event_type: str, request_id: str, run_id: str = 'unknown', **kwargs) -> None:
             """Log an event to the database."""
             try:
+                # Generate timestamp when the function is called
+                timestamp = time.time()
                 event_data = json.dumps(kwargs, ensure_ascii=False)
                 
                 async with self.async_session() as session:
                     async with session.begin():
                         session.add(Event(
-                            timestamp=time.time(),
+                            timestamp=timestamp,
                             event_type=event_type,
                             request_id=request_id,
+                            run_id=run_id,
                             event_data=event_data
                         ))
                 
-                logger.info(f"Successfully logged event: {event_type} for request_id: {request_id}")
+                logger.info(f"Successfully logged event: {event_type} for request_id: {request_id}, run_id: {run_id}")
             except Exception as e:
                 logger.error(f"Failed to log event: {e}")
         
-        async def get_events_by_request_id(self, request_id: str) -> List[Dict[str, Any]]:
-            """Retrieve all events for a specific request ID."""
+        async def get_events_by_request_id(self, request_id: str, run_id: str = None) -> List[Dict[str, Any]]:
+            """Retrieve all events for a specific request ID, optionally filtered by run_id."""
             try:
                 async with self.async_session() as session:
                     async with session.begin():
-                        result = await session.execute(
-                            text("SELECT * FROM events WHERE request_id = :request_id ORDER BY timestamp"),
-                            {"request_id": request_id}
-                        )
+                        if run_id:
+                            result = await session.execute(
+                                text("SELECT * FROM events WHERE request_id = :request_id AND run_id = :run_id ORDER BY timestamp"),
+                                {"request_id": request_id, "run_id": run_id}
+                            )
+                        else:
+                            result = await session.execute(
+                                text("SELECT * FROM events WHERE request_id = :request_id ORDER BY timestamp"),
+                                {"request_id": request_id}
+                            )
                         rows = result.fetchall()
                 
                 events = []
@@ -423,7 +501,7 @@ if SQLALCHEMY_AVAILABLE:
                 return []
         
         async def check_and_log_tool_call(self, normalized_call: str, function_name: str, arguments: Dict[str, Any], 
-                                         request_id: str, branch_id: str = "main") -> bool:
+                                         request_id: str, branch_id: str = "main", run_id: str = "unknown") -> bool:
             """Check if a tool call exists and log it if not. Return True if it existed before."""
             try:
                 args_str = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
@@ -453,9 +531,10 @@ if SQLALCHEMY_AVAILABLE:
                                 function_name=function_name,
                                 arguments=args_str,
                                 first_occurrence_time=timestamp,
-                                first_occurrence_request_id=request_id
+                                first_occurrence_request_id=request_id,
+                                first_occurrence_run_id=run_id
                             ))
-                            logger.info(f"Successfully logged new tool call: {function_name} for normalized_call: {normalized_call}, request_id: {request_id}")
+                            logger.info(f"Successfully logged new tool call: {function_name} for normalized_call: {normalized_call}, request_id: {request_id}, run_id: {run_id}")
                             return False
                 
             except Exception as e:
@@ -485,6 +564,30 @@ if SQLALCHEMY_AVAILABLE:
             except Exception as e:
                 logger.error(f"Failed to retrieve previous tool call: {e}")
                 return None
+            
+        async def get_events_by_run_id(self, run_id: str) -> List[Dict[str, Any]]:
+            """Retrieve all events for a specific run_id."""
+            try:
+                async with self.async_session() as session:
+                    async with session.begin():
+                        result = await session.execute(
+                            text("SELECT * FROM events WHERE run_id = :run_id ORDER BY timestamp"),
+                            {"run_id": run_id}
+                        )
+                        rows = result.fetchall()
+                
+                events = []
+                for row in rows:
+                    event_dict = dict(row._mapping)
+                    event_dict['event_data'] = json.loads(event_dict['event_data'])
+                    events.append(event_dict)
+                
+                logger.info(f"Successfully retrieved {len(events)} events for run_id: {run_id}")
+                return events
+                
+            except Exception as e:
+                logger.error(f"Failed to retrieve events by run_id: {e}")
+                return []
 
 
 @lru_cache(maxsize=1)
@@ -517,11 +620,16 @@ def get_event_db(db_type: str = "sqlite", db_path: str = "./events.db", db_url: 
 global_event_db = get_event_db()
 
 
-async def log_event(event_type: str, request_id: str, **kwargs) -> None:
+async def log_event(event_type: str, request_id: str, run_id: str = 'unknown', **kwargs) -> None:
     """Convenience function to log an event using the global event DB instance."""
-    await global_event_db.log_event(event_type, request_id, **kwargs)
+    await global_event_db.log_event(event_type, request_id, run_id, **kwargs)
 
 
-async def get_events_by_request_id(request_id: str) -> List[Dict[str, Any]]:
-    """Convenience function to get events by request ID using the global event DB instance."""
-    return await global_event_db.get_events_by_request_id(request_id)
+async def get_events_by_request_id(request_id: str, run_id: str = None) -> List[Dict[str, Any]]:
+    """Convenience function to get events by request ID using the global event DB instance, optionally filtered by run_id."""
+    return await global_event_db.get_events_by_request_id(request_id, run_id)
+
+
+async def get_events_by_run_id(run_id: str) -> List[Dict[str, Any]]:
+    """Convenience function to get all events for a specific run_id using the global event DB instance."""
+    return await global_event_db.get_events_by_run_id(run_id)

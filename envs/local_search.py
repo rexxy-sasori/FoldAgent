@@ -323,12 +323,13 @@ def keep_first_n_words(text: str, n: int = 1000) -> str:
 
 
 class AsyncSearchClient:
-    def __init__(self, base_url: str, timeout: float = 300.0, retries: int = 3, backoff: float = 0.5, request_id: Optional[str] = None):
+    def __init__(self, base_url: str, timeout: float = 300.0, retries: int = 3, backoff: float = 0.5, request_id: Optional[str] = None, run_id: Optional[str] = None):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.retries = retries
         self.backoff = backoff
         self.request_id = request_id
+        self.run_id = run_id
         # Configure proxy settings from environment variables
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
@@ -361,11 +362,13 @@ class AsyncSearchClient:
                 await asyncio.sleep(self.backoff * attempt)
         raise last_exc  # should not reach
 
-    async def search(self, query: str, k: int = 10):
-        logger.info(f"[SEARCH] Initiating search with query: '{query}' (top {k} results)")
+    async def search(self, query: str, k: int = 10, run_id: Optional[str] = None):
+        # Use instance run_id if no run_id is provided
+        run_id = run_id or self.run_id or 'unknown'
+        logger.info(f"[SEARCH] Initiating search with query: '{query}' (top {k} results), run_id: {run_id}")
         start_time = time.time()
         try:
-            result = await self._post("/search", {"query": query, "k": k})
+            result = await self._post("/search", {"query": query, "k": k, "run_id": run_id})
             end_time = time.time()
             duration = end_time - start_time
             
@@ -375,6 +378,7 @@ class AsyncSearchClient:
                 await log_event(
                     event_type='search_server',
                     request_id=self.request_id,
+                    run_id=run_id,
                     query=query,
                     k=k,
                     start_time=start_time,
@@ -394,6 +398,7 @@ class AsyncSearchClient:
                 await log_event(
                     event_type='search_server_error',
                     request_id=self.request_id,
+                    run_id=run_id,
                     query=query,
                     k=k,
                     start_time=start_time,
@@ -481,11 +486,12 @@ def extract_fn_call(text):
 
 
 class LocalSearch:
-    def __init__(self, config, tokenizer, ability, request_id=None):
+    def __init__(self, config, tokenizer, ability, request_id=None, run_id=None):
         self.config = config
         self.tokenizer = tokenizer
         self.ability = ability
         self.request_id = request_id
+        self.run_id = run_id
         self.stats = collections.Counter()
         self.stats['finish'] = 0
         self.stats['search'] = 0
@@ -499,7 +505,7 @@ class LocalSearch:
 
         base_url = os.getenv("LOCAL_SEARCH_URL")
 
-        self.client = AsyncSearchClient(base_url=base_url, request_id=request_id)
+        self.client = AsyncSearchClient(base_url=base_url, request_id=request_id, run_id=run_id)
         self.question = None
         self.label_answer = None
         self.predicted_answer = None

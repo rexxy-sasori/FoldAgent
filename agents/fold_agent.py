@@ -47,11 +47,26 @@ def extract_summary(text: str) -> str:
     return matches[-1].strip() if matches else None
 
 def clean_response(response):
+    if response is None:
+        return None
+    # 1. Handle explicit return tool calls first
     if '<function=return>' in response:
-        response = response.split('<function=return>')[-1]
-    else:
-        response = re.split(r'<\[[^\]]+\]>', response)[-1]
-    return response
+        result = response.split('<function=return>')[-1]
+        # Strip any closing </function> tag
+        if '</function>' in result:
+            result = result.split('</function>')[0]
+        return result.strip()
+    
+    # 2. Robustly strip reasoning tags (like <seed:think> or <[thought]>)
+    # This regex looks for any tag that ends with 'think' or 'thought'
+    response = re.sub(r'<(seed:)?think>.*?</(seed:)?think>', '', response, flags=re.DOTALL)
+    response = re.sub(r'<\[[^\]]*thought[^\]]*\]>.*?</\[[^\]]*thought[^\]]*\]>', '', response, flags=re.DOTALL)
+    
+    # 3. Fallback: If tags are unclosed or messy, find the first <function=
+    if '<function=' in response:
+        return response[response.find('<function='):]
+        
+    return response.strip()
 
 
 async def process_item(
@@ -62,7 +77,8 @@ async def process_item(
     start_time = time.time()
     # Generate request_id based on item UID and agent type for consistent comparison
     item_uid = item.non_tensor_batch['uid'][0] if 'uid' in item.non_tensor_batch else str(uuid.uuid4())
-    run_id = uuid.uuid4().hex[:8]  # Short unique identifier for this run
+    # Use run_id from context if available, otherwise generate a new one
+    run_id = getattr(context, 'run_id', uuid.uuid4().hex[:8])  # Short unique identifier for this run
     request_id = f"{item_uid}_fold_agent_{run_id}"
     logger.info(f'[REQUEST {request_id}] Starting process_item')
     
@@ -79,7 +95,7 @@ async def process_item(
     # Select env
     EnvClass = select_env(ability, config, )
     logger.debug(f'[REQUEST {request_id}] Environment initialized - is_train: {is_train}, EnvClass: {EnvClass.__name__}')
-    env = EnvClass(config, tokenizer, ability, request_id=request_id)
+    env = EnvClass(config, tokenizer, ability, request_id=request_id, run_id=run_id)
 
     try:
         await env.init_env(item)
@@ -111,6 +127,7 @@ async def process_item(
     # Add request ID to meta_info for LLM client
     meta_info = agent_config.get("meta_info", {})
     meta_info['request_id'] = request_id
+    meta_info['run_id'] = run_id
     llm_client = LLMClass(host, port, tokenizer, config, meta_info=meta_info, agent_type="fold_agent")
     logger.debug(f'[REQUEST {request_id}] LLM client initialized')
 
@@ -132,6 +149,9 @@ async def process_item(
     information_stalls = []
     # Track branch returns for correlation analysis
     branch_returns = []
+    # Track tool call statistics
+    total_calls_count = 0
+    redundant_calls_count = 0
     while iteration < max_turn:
         if time.time() - session_start_time > session_timeout:
             logger.info('[SESSION] Session Timeout')
@@ -199,7 +219,8 @@ async def process_item(
             logger.info(f'[INFO_STALL] {request_id} Iteration {iteration}: {matches}')
 
         session_message.append({'role': 'assistant', 'content': response})
-        fn_call = extract_fn_call(response)
+        cleaned_response = clean_response(response)
+        fn_call = extract_fn_call(cleaned_response)
         if fn_call is not None and fn_call['function'] == 'branch':
             if len(branches) + 1 > max_session:
                 observation = f"You've already reached the limit of {len(branches)} branch calls. Continue working independently."
@@ -216,6 +237,7 @@ async def process_item(
                 await log_event(
                     event_type='branch',
                     request_id=request_id,
+                    run_id=run_id,
                     description=description,
                     agent_name=agent_name,
                     context_length=context_length,
@@ -230,18 +252,8 @@ async def process_item(
                 agent[agent_name].append({'role': 'user', 'content': branch_prompt_formatted})
                 logger.debug(f'[REQUEST {request_id}] Calling branch agent {agent_name} react')
                 
-                # Track tool calls during branch execution
-                def branch_run_action_wrapper(response):
-                    # Extract and log tool calls to global registry
-                    fn_call = extract_fn_call(response)
-                    if fn_call:
-                        tool_signature = f"{fn_call['function']}({str(fn_call['arguments'])})"
-                        global_execution_registry.add(tool_signature)
-                        logger.debug(f'[BRANCH_TOOL] {agent_name}: {tool_signature}')
-                    return run_action(env, response, request_id=request_id)
-                
                 agent_return = await agent[agent_name].react(
-                    partial(branch_run_action_wrapper),
+                    partial(run_action, env, request_id=request_id),
                     max_turn=max_turn,
                     max_tokens=getattr(config.plugin, "branch_len", None),
                     session_timeout=session_timeout - time.time() + session_start_time,
@@ -263,7 +275,7 @@ async def process_item(
                     'iteration': iteration,
                     'context_length': len(agent[agent_name].context())
                 })
-                fn_call = extract_fn_call(last_response)
+                fn_call = extract_fn_call(clean_response(last_response))
                 branch_message = None
                 if fn_call is not None and fn_call['function'] == 'return':
                     if 'message' in fn_call['arguments']:
@@ -276,6 +288,7 @@ async def process_item(
                     await log_event(
                         event_type='return',
                         request_id=request_id,
+                        run_id=run_id,
                         description=description,
                         agent_name=agent_name,
                         context_length=len(agent[agent_name].context()),
@@ -293,6 +306,7 @@ async def process_item(
                     await log_event(
                         event_type='return',
                         request_id=request_id,
+                        run_id=run_id,
                         description=description,
                         agent_name=agent_name,
                         context_length=len(agent[agent_name].context()),
@@ -308,35 +322,49 @@ async def process_item(
                     await log_event(
                         event_type='return',
                         request_id=request_id,
+                        run_id=run_id,
                         description=description,
                         agent_name=agent_name,
                         context_length=len(agent[agent_name].context()),
                         branch_message=branch_message,
                         return_type='implicit'
                     )
+                
+                # Extract and add all tool calls from branch message history to global registry
+                for msg in agent[agent_name].messages():
+                    if msg.get('role') == 'assistant':
+                        fn_call = extract_fn_call(msg.get('content', ''))
+                        if fn_call:
+                            tool_signature = f"{fn_call['function']}({str(fn_call['arguments'])})"
+                            global_execution_registry.add(tool_signature)
+                            logger.debug(f'[BRANCH_TOOL_ADDED] {agent_name}: {tool_signature}')
+                            
                 observation = branch_message
                 branch_return[agent_name] = observation
                 # print(observation)
         else:
             # Extract and check for redundant tool calls in main agent
-            fn_call = extract_fn_call(response)
+            fn_call = extract_fn_call(cleaned_response)
             if fn_call:
                 tool_signature = f"{fn_call['function']}({str(fn_call['arguments'])})"
                 # Check for redundant tool execution
                 if tool_signature in global_execution_registry:
-                    logger.warning(f'[BAD_FOLD_DETECTION] {request_id} Main Agent re-executing redundant tool: {tool_signature}')
+                    logger.warning(f'[REDUNDANT_EXECUTION] {request_id} Main Agent re-executing redundant tool: {tool_signature}')
                     await log_event(
-                        event_type='BAD_FOLD_DETECTION',
+                        event_type='REDUNDANT_EXECUTION',
                         request_id=request_id,
+                        run_id=run_id,
                         tool_signature=tool_signature,
                         iteration=iteration,
                         agent_type='main',
                         timestamp=time.time()
                     )
+                    redundant_calls_count += 1
                 else:
                     global_execution_registry.add(tool_signature)
+                    total_calls_count += 1
             
-            observation = await run_action(env, response, request_id=request_id)
+            observation = await run_action(env, cleaned_response, request_id=request_id)
             if observation is None:
                 mask_rollout = False
                 break
@@ -361,6 +389,7 @@ async def process_item(
     await log_event(
         event_type='inference_complete',
         request_id=request_id,
+        run_id=run_id,
         inference_time=inference_time,
         session_time=env.stats['session_time'],
         traj_num=len(agent),
@@ -399,11 +428,16 @@ async def process_item(
         await log_event(
             event_type='stall_analysis',
             request_id=request_id,
+            run_id=run_id,
             total_stalls=len(information_stalls),
             stalls_after_folds=stalls_after_folds,
             branch_return_count=len(branch_returns),
             stalls=information_stalls
         )
+    
+    # Print redundant execution summary
+    logger.info(f'[REDUNDANT_EXECUTION_SUMMARY] {request_id} Total Redundant Calls: {redundant_calls_count} out of {total_calls_count + redundant_calls_count} total calls')
+    print(f'Total Redundant Calls: {redundant_calls_count} out of {total_calls_count + redundant_calls_count} total calls')
 
     if getattr(env, 'is_finish', False) or getattr(env, 'finish', False):
         mask_rollout = False

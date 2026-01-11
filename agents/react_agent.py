@@ -26,7 +26,8 @@ async def process_item(
     start_time = time.time()
     # Generate request_id based on item UID and agent type for consistent comparison
     item_uid = item.non_tensor_batch['uid'][0] if 'uid' in item.non_tensor_batch else str(uuid.uuid4())
-    run_id = uuid.uuid4().hex[:8]  # Short unique identifier for this run
+    # Use run_id from context if available, otherwise generate a new one
+    run_id = getattr(context, 'run_id', uuid.uuid4().hex[:8])  # Short unique identifier for this run
     request_id = f"{item_uid}_react_agent_{run_id}"
     logger.info(f'[REQUEST {request_id}] Starting process_item')
     tokenizer = context.tokenizer
@@ -40,7 +41,7 @@ async def process_item(
     # Select env
     EnvClass = select_env(ability, config, )
     logger.debug(f'[REQUEST {request_id}] Environment initialized - is_train: {is_train}, EnvClass: {EnvClass.__name__}')
-    env = EnvClass(config, tokenizer, ability, request_id=request_id)
+    env = EnvClass(config, tokenizer, ability, request_id=request_id, run_id=run_id)
 
     try:
         await env.init_env(item)
@@ -54,9 +55,10 @@ async def process_item(
     max_turn = agent_config.get("max_turn", 64)
     host = context.server_host
     port = context.server_port
-    # Add request ID to meta_info for LLM client
+    # Add request ID and run_id to meta_info for LLM client
     meta_info = agent_config.get("meta_info", {})
     meta_info['request_id'] = request_id
+    meta_info['run_id'] = run_id
     llm_client = LLMClass(host, port, tokenizer, config, meta_info=meta_info, agent_type="react_agent")
     logger.debug(f'[REQUEST {request_id}] LLM client initialized')
     prompt_turn = len(user_prompt)

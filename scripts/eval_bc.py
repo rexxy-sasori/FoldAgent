@@ -76,14 +76,14 @@ def parse_args():
     return parser.parse_args()
 
 
-async def eval_one(row, config, tokenizer, model_name):
+async def eval_one(row, config, tokenizer, model_name, run_id):
     instance_id = row['extra_info'].get('instance_id', 'unknown')
     item_logger = logging.getLogger(f'eval_bc.item-{instance_id}')
     item_logger.info(f"Starting evaluation for instance_id={instance_id}")
     
     item_logger.debug(f"Creating TaskContext with model: {model_name}")
     context = TaskContext(config=config, global_step=0, server_host=model_name,
-                          server_port=0, is_train=False, tokenizer=tokenizer)
+                          server_port=0, is_train=False, run_id=run_id, tokenizer=tokenizer)
 
     item_logger.debug(f"Creating DataProto for instance")
     item = DataProto()
@@ -128,7 +128,7 @@ async def eval_one(row, config, tokenizer, model_name):
     return result
 
 
-async def worker(worker_id, rows, args, pbar, shared_scores):
+async def worker(worker_id, rows, args, pbar, shared_scores, run_id):
     worker_logger = logging.getLogger(f'eval_bc.worker-{worker_id}')
     worker_logger.info(f"Initializing worker {worker_id} with {len(rows)} items")
     
@@ -162,7 +162,7 @@ async def worker(worker_id, rows, args, pbar, shared_scores):
         instance_id = row['extra_info'].get('instance_id', 'unknown')
         worker_logger.info(f"Processing item {idx+1}/{len(rows)}: instance_id={instance_id}")
         
-        result = await eval_one(row, config, tokenizer, args.model_name)
+        result = await eval_one(row, config, tokenizer, args.model_name, run_id)
         
         worker_logger.info(f"Completed item {idx+1}/{len(rows)}: instance_id={result['instance_id']}, status={result['status']}, score={result['score']}")
         
@@ -207,7 +207,7 @@ def main():
         shared_scores = []
         with tqdm(total=len(df), desc="Evaluating", unit="item") as pbar:
             logger.info("Starting worker tasks")
-            tasks = [worker(i, [chunks[i].iloc[j] for j in range(len(chunks[i]))], args, pbar, shared_scores)
+            tasks = [worker(i, [chunks[i].iloc[j] for j in range(len(chunks[i]))], args, pbar, shared_scores, run_id)
                      for i in range(args.num_workers)]
             logger.info(f"Launched {len(tasks)} worker tasks")
             return await asyncio.gather(*tasks)

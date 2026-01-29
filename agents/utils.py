@@ -23,10 +23,10 @@ logger = logging.getLogger(__name__)
 
 def select_env(ability, config, extra_info=None):
     # Select env
-    if ability == 'swe':
-        EnvClass = None  # TODO docker env
+    if ability == 'code_repair' or ability == 'swe':
+        EnvClass = None  # Will use GymEnv wrapper with RepairEnv
     elif ability == 'swe_loc':
-        EnvClass = None  # TODO read-only swe env
+        EnvClass = None  # Will use GymEnv wrapper with FileLocEnv
     elif 'LocalSearch' in ability:
         EnvClass = LocalSearch
     else:
@@ -192,6 +192,8 @@ class CallLLM:  # Call policy LLM in RL env
         source_agent_type = self.agent_type  # Original client agent_type (fold_agent/react_agent)
         agent_name = kwargs.pop('agent_name', role_agent_type)
 
+        # Use configurable track_log_prob parameter from config
+        track_log_prob = getattr(self.config.plugin, 'track_log_prob', False)
         request_data = {
             "model": "rollout",
             "messages": {'prompt': input_ids},
@@ -201,6 +203,8 @@ class CallLLM:  # Call policy LLM in RL env
             "max_tokens": max_tokens,
             "max_length": max_len,
             "meta_info": self.meta_info | {'uid': uid},
+            "logprobs": track_log_prob,
+            "top_logprobs": 1 if track_log_prob else 0,
         }
 
         import asyncio
@@ -271,37 +275,64 @@ class CallLLM:  # Call policy LLM in RL env
                     logger.info(f"[CallLLM Timing ({source_agent_type}/{role_agent_type})] Request ID: {request_id}, Duration: {duration:.2f}s, Attempt: {attempt + 1}")
                     
                     # Log LLM response to database with usage information
-                    usage = completion.get('usage', {})
-                    if hasattr(completion, 'usage'):
-                        usage = vars(completion.usage)
-                    elif 'usage' in completion:
-                        usage = completion['usage']
-                    
-                    # Extract cached_tokens from either direct usage or prompt_tokens_details
-                    cached_tokens = usage.get('cached_tokens', 0)
-                    # Check prompt_tokens_details if not found directly
-                    if cached_tokens == 0:
-                        cached_tokens = usage.get('prompt_tokens_details', {}).get('cached_tokens', 0)
-                    
-                    await log_event(
-                    event_type='llm_response',
-                    request_id=request_id,
-                    run_id=run_id,
-                    source_agent_type=source_agent_type,
-                    agent_type=role_agent_type,
-                    model="rollout",
-                    start_time=start_time,
-                    end_time=end_time,
-                    duration=duration,
-                    prompt_tokens=usage.get('prompt_tokens', 0),
-                    completion_tokens=usage.get('completion_tokens', 0),
-                    cached_tokens=cached_tokens,
-                    total_tokens=usage.get('total_tokens', 0),
-                    branch_context=agent_name  # Now shows specific agent name
-                )
-                    
-                    await session.close()
-                    return completion
+                usage = completion.get('usage', {})
+                if hasattr(completion, 'usage'):
+                    usage = vars(completion.usage)
+                elif 'usage' in completion:
+                    usage = completion['usage']
+                
+                # Extract cached_tokens from either direct usage or prompt_tokens_details
+                cached_tokens = usage.get('cached_tokens', 0)
+                # Check prompt_tokens_details if not found directly
+                if cached_tokens == 0:
+                    cached_tokens = usage.get('prompt_tokens_details', {}).get('cached_tokens', 0)
+                
+                # Extract logprobs from completion if available
+                response_log_probs = []
+                if 'choices' in completion and len(completion['choices']) > 0:
+                    choice = completion['choices'][0]
+                    if 'logprobs' in choice and choice['logprobs']:
+                        # Extract logprobs based on the structure of the completion response
+                        if 'content' in choice['logprobs']:
+                            response_log_probs = [token['logprob'] for token in choice['logprobs']['content']]
+                        elif 'text_logprobs' in choice['logprobs']:
+                            # Alternative structure
+                            response_log_probs = [lp for lp in choice['logprobs']['text_logprobs'] if lp is not None]
+                    elif 'message' in choice and 'response_log_probs' in choice['message']:
+                        # Fallback to logprobs in message if present
+                        response_log_probs = choice['message']['response_log_probs']
+                
+                # Get the current context - decode input_ids to conversation format for logging
+                conversation_history = decode_conversation(input_ids, self.tokenizer)[0]
+                # Create a summary of the conversation context
+                context_summary = {
+                    'conversation_length': len(conversation_history),
+                    'last_few_messages': conversation_history[-3:] if len(conversation_history) > 3 else conversation_history,
+                    'input_tokens_count': len(input_ids),
+                    'meta_info': self.meta_info,
+                    'generation_kwargs': generation_kwargs
+                }
+                
+                await log_event(
+                event_type='llm_response',
+                request_id=request_id,
+                run_id=run_id,
+                source_agent_type=source_agent_type,
+                agent_type=role_agent_type,
+                model="rollout",
+                start_time=start_time,
+                end_time=end_time,
+                duration=duration,
+                prompt_tokens=usage.get('prompt_tokens', 0),
+                completion_tokens=usage.get('completion_tokens', 0),
+                cached_tokens=cached_tokens,
+                total_tokens=usage.get('total_tokens', 0),
+                branch_context=agent_name,  # Now shows specific agent name
+                response_log_probs=response_log_probs,  # Log logprobs for variance analysis
+                context=context_summary  # Log current context
+            )
+                await session.close()
+                return completion
 
             except Exception as e:
                 logger.error(f"[CallLLM ERROR ({self.agent_type})] {e}")
@@ -484,12 +515,16 @@ class CallAPI:  # Call external API
                     branch_context=agent_name  # Now shows specific agent name
                 )
                 
+                # Use configurable track_log_prob parameter from config
+                track_log_prob = getattr(self.config.plugin, 'track_log_prob', False)
                 # Use the same request_id for the API call that was logged in the request
                 response = await self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
                     max_completion_tokens=max_tokens,
                     extra_headers={"X-Request-ID": request_id},
+                    logprobs=track_log_prob,
+                    top_logprobs=1 if track_log_prob else 0,
                 )
                 # End timing and calculate duration
                 end_time = time.time()
@@ -550,9 +585,38 @@ class CallAPI:  # Call external API
                 text = response.choices[0].message.content or ""
                 text_ids = self.tokenizer.encode(text, add_special_tokens=False)
                 
+                # Extract logprobs from response if available
+                response_log_probs = []
+                if hasattr(response.choices[0], 'logprobs') and response.choices[0].logprobs:
+                    logprobs_content = response.choices[0].logprobs.content
+                    if logprobs_content:
+                        # Extract logprobs for each token
+                        response_log_probs = [token.logprob for token in logprobs_content]
+                        # Ensure length matches text_ids
+                        if len(response_log_probs) < len(text_ids):
+                            # Pad with 0.0 if there are fewer logprobs than tokens
+                            response_log_probs.extend([0.0] * (len(text_ids) - len(response_log_probs)))
+                        elif len(response_log_probs) > len(text_ids):
+                            # Truncate if there are more logprobs than tokens
+                            response_log_probs = response_log_probs[:len(text_ids)]
+                
+                # If no logprobs available, use 0.0 as fallback
+                if not response_log_probs:
+                    response_log_probs = [0.0] * len(text_ids)
+                
                 # Log LLM response to database with usage information
                 usage = response.usage
                 run_id = self.meta_info.get('run_id', 'unknown')
+                
+                # Create a summary of the conversation context
+                context_summary = {
+                    'conversation_length': len(messages),
+                    'last_few_messages': messages[-3:] if len(messages) > 3 else messages,
+                    'input_tokens_count': len(input_ids),
+                    'meta_info': self.meta_info,
+                    'model': self.model
+                }
+                
                 await log_event(
                     event_type='llm_response',
                     request_id=request_id,
@@ -567,7 +631,9 @@ class CallAPI:  # Call external API
                     completion_tokens=usage.completion_tokens if usage else len(text_ids),
                     cached_tokens=cached_tokens,
                     total_tokens=usage.total_tokens if usage else 0,
-                    branch_context=agent_name  # Now shows specific agent name
+                    branch_context=agent_name,  # Now shows specific agent name
+                    response_log_probs=response_log_probs,  # Log logprobs for variance analysis
+                    context=context_summary  # Log current context
                 )
 
                 return {
@@ -575,7 +641,7 @@ class CallAPI:  # Call external API
                         "message": {
                             "content": text,
                             "raw_output_ids": text_ids,
-                            "response_log_probs": [0.0] * len(text_ids),
+                            "response_log_probs": response_log_probs,
                             "extra_data": {"input_ids": input_ids, "request_id": actual_request_id},
                             "metrics": {"usage": {
                                 "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,

@@ -1,0 +1,107 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: download-model-qwen-qwen3-coder-480b-a35b-instruct-fp8
+  namespace: liuyunxin
+spec:
+  containers:
+  - name: download-model
+    image: harbor.xa.xshixun.com:7443/hanfeigeng/vllm/vllm-openai:v0.10.2-linux-amd64
+    command: ["sleep", "infinity"]
+    # command: ["bash", "-c"]
+    # args:
+    # - |
+    #   set -e
+      
+    #   # Configure HF Mirror for China access through proxy
+    #   echo "Configuring HF mirror for China access..."
+    #   export HF_ENDPOINT=https://hf-mirror.com
+      
+    #   # Explicitly disable Rust transfer for verbose Python logs/progress bars
+    #   export HF_HUB_ENABLE_HF_TRANSFER=0
+      
+    #   MODEL_ID="Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8"
+    #   MODEL_PATH="/model/.cache/huggingface/hub/models--Qwen--Qwen3-Coder-480B-A35B-Instruct-FP8"
+    #   TARGET_GB=440
+      
+    #   mkdir -p /model/.cache/huggingface
+
+    #   # 2. Persistent Download Loop
+    #   echo "🚀 Starting download for $MODEL_ID via HF Mirror (hf-mirror.com)"
+    #   echo "Using proxy: $http_proxy"
+      
+    #   CURRENT_GB=0
+    #   until [ $CURRENT_GB -ge $TARGET_GB ]; do
+    #     echo "Attempting download/resume at $(date)..."
+        
+    #     # Download using HF mirror through proxy (HF_ENDPOINT already set)
+    #     huggingface-cli download "$MODEL_ID" \
+    #       --token "$HF_TOKEN" \
+    #       --resume-download \
+    #       --local-dir-use-symlinks False || echo "⚠️ Connection lost or interrupted. Retrying in 15s..."
+        
+    #     # Verify size to determine if we should exit the loop
+    #     if [ -d "$MODEL_PATH" ]; then
+    #       # Check size in GB
+    #       CURRENT_GB=$(du -sb "$MODEL_PATH" | awk '{print int($1/1024/1024/1024)}')
+    #       echo "Current data on disk: ${CURRENT_GB}GB / ${TARGET_GB}GB"
+    #     fi
+        
+    #     [ $CURRENT_GB -lt $TARGET_GB ] && sleep 15
+    #   done
+
+    #   echo "✅ Download Complete! Final Size: ${CURRENT_GB}GB"
+    #   echo "Model stored at: $MODEL_PATH"
+    #   echo "Pod sleeping for inspection."
+    #   sleep infinity
+
+    volumeMounts:
+    - name: model-storage
+      mountPath: /model
+    env:
+    - name: HF_HOME
+      value: /model/.cache/huggingface
+    - name: HUGGINGFACE_HUB_CACHE
+      value: /model/.cache/huggingface
+    - name: HF_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: hf-token-secret
+          key: HF_TOKEN
+    - name: http_proxy
+      value: http://192.168.3.226:7890
+    - name: https_proxy
+      value: http://192.168.3.226:7890
+    - name: HTTP_PROXY
+      value: http://192.168.3.226:7890
+    - name: HTTPS_PROXY
+      value: http://192.168.3.226:7890
+    - name: NO_PROXY
+      value: "localhost,127.0.0.1,::1,10.0.0.0/8,192.168.0.0/16,.svc,.cluster.local,.svc.k8s.xa.cluster,.hf-mirror.com,.hf-mirror.com,.hf.co,.huggingface.co,.liuyunxin"
+    - name: no_proxy
+      value: "localhost,127.0.0.1,::1,10.0.0.0/8,192.168.0.0/16,.svc,.cluster.local,.svc.k8s.xa.cluster,.hf-mirror.com,.hf-mirror.com,.hf.co,.huggingface.co,.liuyunxin"
+    - name: APT_PROXY
+      value: http://192.168.3.241:3142
+    - name: PIP_INDEX_URL
+      value: http://192.168.12.70:9181/repository/pypi-proxy/simple/
+    - name: PIP_TRUSTED_HOST
+      value: "192.168.12.70"
+    - name: CUDA_VISIBLE_DEVICES
+      value: '0'
+    - name: HF_HUB_DOWNLOAD_TIMEOUT
+      value: "600"
+    - name: HF_HUB_RETRIES
+      value: "50"
+    - name: HF_ENDPOINT
+      value: https://hf-mirror.com
+    resources:
+      limits:
+        memory: 64Gi
+        cpu: '32'
+      requests:
+        memory: 32Gi
+        cpu: '16'
+  volumes:
+  - name: model-storage
+    persistentVolumeClaim:
+      claimName: pvc-qwen3-coder-480b-a35b-instruct-fp8

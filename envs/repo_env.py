@@ -115,6 +115,46 @@ class GymEnv:
 
         reward = await asyncio.to_thread(lambda: self.gym.reward)
         self.gym.release()
+        
+        # Log reward evaluation to database
+        try:
+            from agents.db_client import log_event
+            
+            # Get difficulty if available
+            difficulty = None
+            if 'extra_info' in item.non_tensor_batch and item.non_tensor_batch['extra_info']:
+                extra_info = item.non_tensor_batch['extra_info'][0]
+                if 'difficulty' in extra_info:
+                    difficulty = extra_info['difficulty']
+                # Also check if it's in the main non_tensor_batch
+            elif 'difficulty' in item.non_tensor_batch:
+                difficulty = item.non_tensor_batch['difficulty'][0]
+            
+            # Get request_id and run_id from context or generate
+            request_id = getattr(context, 'request_id', 'unknown')
+            run_id = getattr(context, 'run_id', 'unknown')
+            
+            # Get judge model if available (this environment might not use it)
+            judge_model = os.getenv("JUDGE_OPENAI_MODEL", "unknown")
+            
+            # Get question if available
+            question = None
+            if hasattr(self, 'instance_info') and self.instance_info:
+                question = self.instance_info.get('problem_statement', 'unknown')
+            
+            await log_event(
+                event_type='reward_evaluation_complete',
+                request_id=request_id,
+                run_id=run_id,
+                question=question,
+                reward_score=reward,
+                judge_openai_model=judge_model,
+                difficulty=difficulty
+            )
+        except Exception as e:
+            import logging
+            logging.error(f"[Error] Logging reward evaluation: {e}")
+        
         return "", reward, {}
 
     async def update_dataproto(self, out, item, messages, score, reward_dict, tag='main', metrics=None):

@@ -29,7 +29,6 @@ COPY envs/ ./envs/
 COPY agents/ ./agents/
 COPY scripts/ ./scripts/
 COPY data/ ./data/
-COPY SWE_BENCH_EVALUATION_PLAN.md ./SWE_BENCH_EVALUATION_PLAN.md
 
 # Create necessary directories for SWE-bench evaluation
 RUN mkdir -p gym_data _repo_cache

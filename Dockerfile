@@ -1,6 +1,9 @@
 # Use specified base image from harbor registry
 FROM harbor.xa.xshixun.com:7443/hanfeigeng/vllm/vllm-openai:v0.13.0-linux-amd64
 
+# Install git for repository cloning
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 

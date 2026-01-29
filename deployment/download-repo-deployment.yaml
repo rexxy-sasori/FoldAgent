@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
       - name: download-repo
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.64-log-llmbackend
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.1-swe
         command: ["bash", "-c"]
         args:
         - python3 scripts/download_repo.py
@@ -57,7 +57,6 @@ spec:
         volumeMounts:
         - name: gpfshome
           mountPath: /root
-      restartPolicy: OnFailure
       volumes:
       - name: gpfshome
         persistentVolumeClaim:

@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: download-repo
+  namespace: liuyunxin
+  labels:
+    app: download-repo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: download-repo
+  template:
+    metadata:
+      labels:
+        app: download-repo
+    spec:
+      containers:
+      - name: download-repo
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.64-log-llmbackend
+        command: ["bash", "-c"]
+        args:
+        - python3 scripts/download_repo.py
+        resources:
+          limits:
+            memory: "32Gi"
+            cpu: "16"
+          requests:
+            memory: "16Gi"
+            cpu: "8"
+        env:
+        - name: HF_ENDPOINT
+          value: "https://hf-mirror.com"
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token-secret
+              key: HF_TOKEN
+        - name: http_proxy
+          value: "http://192.168.3.226:7890"
+        - name: https_proxy
+          value: "http://192.168.3.226:7890"
+        - name: HTTP_PROXY
+          value: "http://192.168.3.226:7890"
+        - name: HTTPS_PROXY
+          value: "http://192.168.3.226:7890"
+        - name: NO_PROXY
+          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+        - name: no_proxy
+          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+        - name: APT_PROXY
+          value: "http://192.168.3.241:3142"
+        - name: PIP_INDEX_URL
+          value: "http://192.168.12.70:9181/repository/pypi-proxy/simple/"
+        - name: PIP_TRUSTED_HOST
+          value: "192.168.12.70"
+        volumeMounts:
+        - name: gpfshome
+          mountPath: /root
+      restartPolicy: OnFailure
+      volumes:
+      - name: gpfshome
+        persistentVolumeClaim:
+          claimName: pvc-gpfshome-liuyunxin

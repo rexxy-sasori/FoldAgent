@@ -11,8 +11,10 @@ from filelock import FileLock
 from multiprocessing import Pool, cpu_count
 
 
-DATA_DIR = Path("gym_data")  # snapshots per instance
-CACHE_DIR = Path("_repo_cache")  # bare/partial repos (shared among workers)
+# Use PVC-mounted directory for persistent storage
+PVC_DIR = Path("/root")
+DATA_DIR = PVC_DIR / "gym_data"  # snapshots per instance
+CACHE_DIR = PVC_DIR / "_repo_cache"  # bare/partial repos (shared among workers)
 DATA_DIR.mkdir(exist_ok=True)
 CACHE_DIR.mkdir(exist_ok=True)
 
@@ -189,11 +191,11 @@ def main():
                 failed_ids.append(res["instance_id"])
                 tqdm.write(f"[ERROR] {res['instance_id']}: {res['error']}")
 
-    # Save failed instances to bad.json
+    # Save failed instances to bad.json in PVC directory
     if failed_instances:
         # Check if bad.json already exists and merge
         existing_failures = []
-        bad_json_path = Path("bad.json")
+        bad_json_path = PVC_DIR / "bad.json"
         if bad_json_path.exists():
             try:
                 with open(bad_json_path, "r") as f:
@@ -210,7 +212,7 @@ def main():
 
         final_failures = list(unique_failures.values())
 
-        with open("bad.json", "w") as f:
+        with open(bad_json_path, "w") as f:
             json.dump(final_failures, f, indent=2)
         print(f"\nSaved {len(final_failures)} total failed instances to bad.json")
         print(f"  New failures: {len(failed_instances)}")

@@ -14,7 +14,7 @@ COPY external/verl/ ./external/verl/
 RUN pip3 install ./external/verl
 
 # Install additional Python dependencies
-RUN pip3 install fastapi uvicorn transformers numpy pandas tqdm omegaconf torch huggingface_hub==0.36.0 sqlalchemy asyncpg psycopg2-binary aiosqlite
+RUN pip3 install fastapi uvicorn transformers numpy pandas tqdm omegaconf torch huggingface_hub==0.36.0 sqlalchemy asyncpg psycopg2-binary aiosqlite datasets gitpython filelock
 RUN pip3 install flash-attn --no-build-isolation 
 
 # Clean up unnecessary files after installation
@@ -29,6 +29,10 @@ COPY envs/ ./envs/
 COPY agents/ ./agents/
 COPY scripts/ ./scripts/
 COPY data/ ./data/
+COPY SWE_BENCH_EVALUATION_PLAN.md ./SWE_BENCH_EVALUATION_PLAN.md
+
+# Create necessary directories for SWE-bench evaluation
+RUN mkdir -p gym_data _repo_cache
 
 # Expose ports for services
 EXPOSE 8000

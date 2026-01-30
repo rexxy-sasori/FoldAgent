@@ -11,8 +11,14 @@ from filelock import FileLock
 from multiprocessing import Pool, cpu_count
 
 
-# Use PVC-mounted directory for persistent storage
-PVC_DIR = Path("/root")
+# Parse command-line arguments
+parser = argparse.ArgumentParser(description="Download SWE-bench repositories")
+parser.add_argument('--base-dir', type=str, default='/root', help='Base directory for storing data and cache')
+parser.add_argument('--workers', type=int, default=100, help='Number of workers for parallel processing')
+args = parser.parse_args()
+
+# Use configurable base directory for persistent storage
+PVC_DIR = Path(args.base_dir)
 DATA_DIR = PVC_DIR / "gym_data"  # snapshots per instance
 CACHE_DIR = PVC_DIR / "_repo_cache"  # bare/partial repos (shared among workers)
 DATA_DIR.mkdir(exist_ok=True)
@@ -170,7 +176,7 @@ def process_instance(row):
 # --------------------------------------------------------------------------- #
 
 def main():
-    workers = 100
+    workers = args.workers
 
     # Load both datasets
     ds1 = load_dataset("princeton-nlp/SWE-bench_Verified", split="test")

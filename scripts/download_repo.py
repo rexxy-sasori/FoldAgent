@@ -21,8 +21,8 @@ args = parser.parse_args()
 PVC_DIR = Path(args.base_dir)
 DATA_DIR = PVC_DIR / "gym_data"  # snapshots per instance
 CACHE_DIR = PVC_DIR / "_repo_cache"  # bare/partial repos (shared among workers)
-DATA_DIR.mkdir(exist_ok=True)
-CACHE_DIR.mkdir(exist_ok=True)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def ensure_repo(repo_slug: str) -> Path:

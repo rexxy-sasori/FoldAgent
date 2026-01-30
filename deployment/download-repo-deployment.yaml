@@ -20,7 +20,7 @@ spec:
         image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.1-swe
         command: ["bash", "-c"]
         args:
-        - python3 scripts/download_repo.py
+        - python3 scripts/download_repo.py --base-dir /root --workers 100
         resources:
           limits:
             memory: "32Gi"

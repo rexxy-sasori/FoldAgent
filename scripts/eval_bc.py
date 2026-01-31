@@ -73,6 +73,8 @@ def parse_args():
                         help='URL of the local search server (default: http://localhost:8000)')
     parser.add_argument('--enable_summary', action='store_true',
                         help='Enable summary mode (use with workflow=search for Summary agent)')
+    parser.add_argument('--difficulty', choices=['easy', 'medium', 'hard'], default=None,
+                        help='Filter items by difficulty level (default: None, run all items)')
     return parser.parse_args()
 
 
@@ -189,6 +191,20 @@ def main():
     logger.info(f"Loading data from {args.data_path}")
     df = pd.read_parquet(args.data_path)
     logger.info(f"Successfully loaded {len(df)} items")
+    
+    # Filter by difficulty if specified
+    if args.difficulty:
+        logger.info(f"Filtering items by difficulty: {args.difficulty}")
+        # Handle typo in data_source: 'meduim' instead of 'medium'
+        if args.difficulty == 'medium':
+            # Match both 'medium' and 'meduim'
+            filtered_df = df[df['data_source'].apply(lambda x: 'medium' in str(x) or 'meduim' in str(x))]
+            logger.info(f"Filtered to {len(filtered_df)} items with data_source containing 'medium' or 'meduim'")
+        else:
+            # Normal case: match the specified difficulty
+            filtered_df = df[df['data_source'].apply(lambda x: args.difficulty in str(x))]
+            logger.info(f"Filtered to {len(filtered_df)} items with data_source containing '{args.difficulty}'")
+        df = filtered_df
 
     # Split for workers
     logger.info(f"Splitting data into {args.num_workers} chunks")

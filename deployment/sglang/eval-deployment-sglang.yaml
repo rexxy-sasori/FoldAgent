@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: foldagent-eval-sglang
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.70-log-llmbackend
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.73-log-llmbackend
         ports:
         - containerPort: 8000
           name: metrics
@@ -60,13 +60,13 @@ spec:
           valueFrom:
             secretKeyRef:
               name: foldagent-eval-secrets
-              key: judge-openai-api-key
+              key: research-group-api-key
         - name: JUDGE_OPENAI_BASE_URL
-          value: "https://api.moonshot.cn/v1"
+          value: "https://lonlie.plus7.plus/v1
         - name: JUDGE_OPENAI_URL
-          value: "https://api.moonshot.cn/v1/chat/completions"
+          value: "https://lonlie.plus7.plus/v1/chat/completions"
         - name: JUDGE_OPENAI_MODEL
-          value: "kimi-k2-thinking"
+          value: "gpt-5"
         - name: NO_PROXY
           value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
         - name: no_proxy

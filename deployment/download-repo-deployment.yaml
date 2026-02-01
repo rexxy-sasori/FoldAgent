@@ -17,17 +17,18 @@ spec:
     spec:
       containers:
       - name: download-repo
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.1-swe
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.5-swe
         command: ["bash", "-c"]
         args:
-        - python3 scripts/download_repo.py --base-dir /root --workers 100
+        #- python3 scripts/download_repo.py --base-dir /root/swe-data --workers 8
+        - sleep infinity
         resources:
           limits:
             memory: "32Gi"
             cpu: "16"
           requests:
-            memory: "16Gi"
-            cpu: "8"
+            memory: "32Gi"
+            cpu: "16"
         env:
         - name: HF_ENDPOINT
           value: "https://hf-mirror.com"

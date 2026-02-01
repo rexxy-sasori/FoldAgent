@@ -33,9 +33,6 @@ COPY agents/ ./agents/
 COPY scripts/ ./scripts/
 COPY data/ ./data/
 
-# Create necessary directories for SWE-bench evaluation
-RUN mkdir -p gym_data _repo_cache
-
 # Expose ports for services
 EXPOSE 8000
 

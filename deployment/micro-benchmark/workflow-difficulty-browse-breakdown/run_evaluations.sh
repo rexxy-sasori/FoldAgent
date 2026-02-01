@@ -128,7 +128,7 @@ run_evaluation() {
     
     # Monitor job logs while waiting
     local start_wait=$(date +%s)
-    local timeout=1800  # 30 minutes timeout
+    local timeout=36000  # 10 hours timeout
     
     # Show initial logs
     sleep 5
@@ -339,9 +339,9 @@ main() {
                     echo "# ${workflow} - ${difficulty}"
                     echo "kubectl delete -f \"${job_file}\" --ignore-not-found=true -n ${NAMESPACE}"
                     echo "kubectl create -f \"${job_file}\" -n ${NAMESPACE}"
-                    echo "# Monitor job until completion (30 minute timeout)"
+                    echo "# Monitor job until completion (10 hours timeout)"
                     echo "# Show logs while waiting"
-                    echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=1800s -n ${NAMESPACE}"
+                    echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
                     echo "kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE}"
                     echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
                     echo ""
@@ -377,9 +377,9 @@ main() {
                 echo "# 2. Run evaluation"
                 echo "kubectl delete -f \"${job_file}\" --ignore-not-found=true -n ${NAMESPACE}"
                 echo "kubectl create -f \"${job_file}\" -n ${NAMESPACE}"
-                echo "# Monitor job until completion (30 minute timeout)"
+                echo "# Monitor job until completion (10 hours timeout)"
                 echo "# Show logs while waiting"
-                echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=1800s -n ${NAMESPACE}"
+                echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
                 echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
             else
                 echo "ERROR: Both --difficulty and --workflow must be specified, or use --all"

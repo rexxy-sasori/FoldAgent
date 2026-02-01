@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rsync-server
+  labels:
+    app: rsync
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rsync
+  template:
+    metadata:
+      labels:
+        app: rsync
+    spec:
+      containers:
+      - name: rsync
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/eeacms/rsync:linux-amd64-latest
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            # 1. Start the rsync daemon
+            # --daemon: starts as a server
+            # --no-detach: keeps it in foreground (if you want logs) 
+            # OR use & to background it so you can sleep
+            rsync --daemon --verbose --config=/etc/rsyncd.conf &
+            
+            # 2. Keep the container alive
+            sleep infinity
+        ports:
+        - containerPort: 873
+        env:
+        - name: RSYNC_PASSWORD
+          value: "swe_bench_sync"
+        # We define a volume mount so rsync has a place to write
+        volumeMounts:
+        - name: data-storage
+          mountPath: /root
+        resources:
+          limits:
+            memory: 32Gi
+            cpu: '16'
+          requests:
+            memory: 32Gi
+            cpu: '16'
+      volumes:
+      - name: data-storage
+        persistentVolumeClaim:
+          claimName: pvc-gpfshome-liuyunxin 
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rsync-service
+spec:
+  selector:
+    app: rsync
+  ports:
+    - protocol: TCP
+      port: 873
+      targetPort: 873

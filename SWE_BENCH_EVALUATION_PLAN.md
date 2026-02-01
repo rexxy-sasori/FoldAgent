@@ -54,13 +54,11 @@ Modify the agent input format to handle SWE-bench tasks, which typically include
 - Test cases
 - Expected behavior
 
-### 3.2 Code Search Integration
-Leverage the existing search server for code retrieval during evaluation:
+### 3.2 Code Execution Server Setup
+Set up the repo server for code execution and retrieval during evaluation:
 
 ```bash
-cd envs && python search_server.py \
-  --model Qwen/Qwen3-Embedding-8B \
-  --corpus <swe-bench-code-corpus> \
+cd envs && python repo_server.py \
   --host 0.0.0.0 \
   --port 8000
 ```
@@ -81,6 +79,7 @@ python scripts/eval_swebench.py \
   --val_max_turn 200 \
   --max_session 10 \
   --val_max_session 10 \
+  --repo_server_url http://localhost:8000 \
   --output_dir results/swebench
 ```
 
@@ -103,6 +102,7 @@ python scripts/eval_swebench.py \
   --val_max_turn 200 \
   --max_session 10 \
   --val_max_session 10 \
+  --repo_server_url http://localhost:8000 \
   --output_dir results/swebench_local
 ```
 

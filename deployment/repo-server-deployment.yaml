@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: repo-server
+  namespace: liuyunxin
+  labels:
+    app: repo-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: repo-server
+  template:
+    metadata:
+      labels:
+        app: repo-server
+    spec:
+      containers:
+      - name: repo-server
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.73-log-llmbackend 
+        command: ["bash", "-c"]
+        args:
+        - python3 envs/repo_server.py --host 0.0.0.0 --port 8000
+        ports:
+        - containerPort: 8000
+        resources:
+          limits:
+            memory: "8Gi"
+            cpu: "16"
+          requests:
+            memory: "8Gi"
+            cpu: "16"
+        env:
+        - name: BASE_DIR_PATH
+          value: /root/gym_data
+        - name: NUM_WORKERS
+          value: "16"
+        - name: http_proxy
+          value: "http://192.168.3.226:7890"
+        - name: https_proxy
+          value: "http://192.168.3.226:7890"
+        - name: HTTP_PROXY
+          value: "http://192.168.3.226:7890"
+        - name: HTTPS_PROXY
+          value: "http://192.168.3.226:7890"
+        - name: NO_PROXY
+          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+        - name: no_proxy
+          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+        - name: APT_PROXY
+          value: "http://192.168.3.241:3142"
+        - name: PIP_INDEX_URL
+          value: "http://192.168.12.70:9181/repository/pypi-proxy/simple/"
+        - name: PIP_TRUSTED_HOST
+          value: "192.168.12.70"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secrets
+              key: DATABASE_URL
+        volumeMounts:
+        - name: gpfshome
+          mountPath: /root
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      restartPolicy: Always
+      volumes:
+      - name: gpfshome
+        persistentVolumeClaim:
+          claimName: pvc-gpfshome-liuyunxin
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: repo-server
+  namespace: liuyunxin
+spec:
+  selector:
+    app: repo-server
+  ports:
+  - port: 8000
+    targetPort: 8000
+  type: ClusterIP

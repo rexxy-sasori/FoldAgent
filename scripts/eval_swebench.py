@@ -65,8 +65,8 @@ def parse_args():
                         help='Model name for API (e.g., gpt-5-nano, gpt-4o, or vLLM model path) (default: gpt-5-nano)')
     parser.add_argument('--num_workers', type=int, default=64,
                         help='Number of parallel evaluation workers (default: 64)')
-    parser.add_argument('--local_search_url', default='http://localhost:8000',
-                        help='URL of the local search server (default: http://localhost:8000)')
+    parser.add_argument('--repo_server_url', default='http://localhost:8000',
+                        help='URL of the repo server (default: http://localhost:8000)')
     parser.add_argument('--enable_summary', action='store_true',
                         help='Enable summary mode (use with workflow=search for Summary agent)')
     parser.add_argument('--track-log-prob', action='store_true',
@@ -88,7 +88,16 @@ async def eval_one(row, config, tokenizer, model_name, run_id):
     item_logger.debug(f"Creating DataProto for instance")
     item = DataProto()
     item.non_tensor_batch = {
-        'ability': np.array(["code_repair"], dtype=object),
+        'ability': np.array(["RepairEnv@" + json.dumps({
+            'instance_id': instance_id,
+            'repo': row['repo'],
+            'base_commit': row['base_commit'],
+            'patch': row.get('patch', ''),
+            'problem_statement': row.get('problem_statement', ''),
+            'test_patch': row.get('test_patch', ''),
+            'test_filename': row.get('test_filename', ''),
+            'test_command': row.get('test_command', ''),
+        })], dtype=object),
         'extra_info': np.array([{
             'instance_id': instance_id,
             'repo': row['repo'],
@@ -108,14 +117,10 @@ async def eval_one(row, config, tokenizer, model_name, run_id):
     workflow = config.actor_rollout_ref.rollout.plugin.workflow
     item_logger.info(f"Using workflow: {workflow}")
     
-    if workflow == 'search':
-        from agents.react_agent import process_item as react_process_item
-        item_logger.info(f"Calling react_process_item for evaluation")
-        output = await react_process_item(item, context, CallAPI)
-    else:
-        from agents.fold_agent import process_item as fold_process_item
-        item_logger.info(f"Calling fold_process_item for evaluation")
-        output = await fold_process_item(item, context, CallAPI)
+    # For SWE-bench tasks, we use the fold_agent which properly handles RepairEnv
+    from agents.fold_agent import process_item as fold_process_item
+    item_logger.info(f"Calling fold_process_item for evaluation")
+    output = await fold_process_item(item, context, CallAPI)
     item_logger.info(f"process_item completed")
 
     score = output.non_tensor_batch.get('extra_data', [{}])[0].get('stats', {}).get('score', 0) if output else 0
@@ -207,8 +212,8 @@ def main():
     args = parse_args()
     logger.info(f"Parsed arguments: {args}")
     
-    os.environ["LOCAL_SEARCH_URL"] = args.local_search_url
-    logger.info(f"Set LOCAL_SEARCH_URL to {args.local_search_url}")
+    os.environ["LOC_IP_ADDRESS"] = args.repo_server_url
+    logger.info(f"Set LOC_IP_ADDRESS to {args.repo_server_url}")
 
     # Load data
     logger.info("Loading SWE-bench datasets")

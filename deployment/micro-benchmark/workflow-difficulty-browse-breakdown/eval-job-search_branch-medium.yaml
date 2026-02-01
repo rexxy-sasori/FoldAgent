@@ -91,4 +91,16 @@ spec:
           value: "INFO"
         - name: HF_HOME
           value: "/root/.cache/huggingface"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secrets
+              key: DATABASE_URL
+        volumeMounts:
+        - name: gpfshome
+          mountPath: /root
+      volumes:
+      - name: gpfshome
+        persistentVolumeClaim:
+          claimName: pvc-gpfshome-liuyunxin
       restartPolicy: OnFailure

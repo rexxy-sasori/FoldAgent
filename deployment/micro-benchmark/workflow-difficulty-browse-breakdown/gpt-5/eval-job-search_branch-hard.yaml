@@ -1,16 +1,16 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: foldagent-eval-search_branch-hard
+  name: foldagent-eval-search-branch-hard
   namespace: liuyunxin
 spec:
   template:
     metadata:
       labels:
-        app: foldagent-eval-search_branch-hard
+        app: foldagent-eval-search-branch-hard
     spec:
       containers:
-      - name: foldagent-eval-search_branch-hard
+      - name: foldagent-eval-search-branch-hard
         image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.73-log-llmbackend
         ports:
         - containerPort: 8000

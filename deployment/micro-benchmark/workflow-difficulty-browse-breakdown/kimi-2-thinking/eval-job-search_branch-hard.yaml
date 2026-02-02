@@ -1,16 +1,16 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: foldagent-eval-search_branch-hard-kimi-k2-thinking
+  name: foldagent-eval-search-branch-hard-kimi-k2-thinking
   namespace: liuyunxin
 spec:
   template:
     metadata:
       labels:
-        app: foldagent-eval-search_branch-hard-kimi-k2-thinking
+        app: foldagent-eval-search-branch-hard-kimi-k2-thinking
     spec:
       containers:
-      - name: foldagent-eval-search_branch-hard-kimi-k2-thinking
+      - name: foldagent-eval-search-branch-hard-kimi-k2-thinking
         image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.73-log-llmbackend
         ports:
         - containerPort: 8000

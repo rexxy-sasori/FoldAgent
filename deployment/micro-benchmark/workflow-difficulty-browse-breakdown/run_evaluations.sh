@@ -163,95 +163,88 @@ run_evaluation() {
     kubectl create -f "${job_file}" -n ${NAMESPACE}
     
     # Get the job name
-    local job_name=$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}')
+    local label_selector="app=foldagent-eval-${workflow//_/-}-${difficulty}"
+    if [ -n "${JUDGE_MODEL_DIR}" ]; then
+        # For judge model directories, use a more specific selector
+        # Handle different naming conventions based on judge model directory
+        if [ "${JUDGE_MODEL_DIR}" = "kimi-2-thinking" ]; then
+            label_selector="app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking"
+        elif [ "${JUDGE_MODEL_DIR}" = "gpt-5" ]; then
+            label_selector="app=foldagent-eval-${workflow//_/-}-${difficulty}"
+        else
+            # Default to the basic selector
+            label_selector="app=foldagent-eval-${workflow//_/-}-${difficulty}"
+        fi
+    fi
+    local job_name=$(kubectl get jobs -l "${label_selector}" -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}')
     
     echo "[$(get_timestamp)] Monitoring job progress..."
     echo "[$(get_timestamp)] Waiting for job to complete..."
-    
-    # Create a temporary file to signal deployment issues
-    local deployments_ok_file=$(mktemp)
-    echo "true" > "${deployments_ok_file}"
-    
-    # Start background process to monitor deployments
-    (while true; do
-        if ! check_deployments_ready; then
-            echo "false" > "${deployments_ok_file}"
-            break
+
+    # Wait for pod to be ready before monitoring
+    echo "[$(get_timestamp)] Waiting for pod to be ready..."
+    local pod_ready=false
+    local pod_wait_timeout=600  # 10 minutes to wait for pod to be ready
+    local pod_wait_elapsed=0
+    local pod_check_interval=10  # Check every 10 seconds
+
+    while [ ${pod_wait_elapsed} -lt ${pod_wait_timeout} ]; do
+        local pod_name=$(kubectl get pods -l job-name="${job_name}" -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        
+        if [ -n "${pod_name}" ]; then
+            local pod_phase=$(kubectl get pod "${pod_name}" -n ${NAMESPACE} -o jsonpath='{.status.phase}' 2>/dev/null)
+            
+            if [ "${pod_phase}" = "Running" ]; then
+                pod_ready=true
+                echo "[$(get_timestamp)] Pod ${pod_name} is ready"
+                break
+            elif [ "${pod_phase}" = "Failed" ]; then
+                echo "[$(get_timestamp)] ERROR: Pod ${pod_name} failed to start"
+                pod_ready=false
+                break
+            fi
         fi
-        sleep 60  # Check every 60 seconds
-    done) &
-    
-    local monitor_pid=$!
-    
+        
+        sleep ${pod_check_interval}
+        pod_wait_elapsed=$((pod_wait_elapsed + pod_check_interval))
+    done
+
+    if [ "${pod_ready}" = "false" ]; then
+        echo "[$(get_timestamp)] WARNING: Pod did not become ready within ${pod_wait_timeout} seconds"
+        echo "[$(get_timestamp)] Proceeding with job monitoring anyway..."
+    fi
+
     # Monitor job logs while waiting
     local start_wait=$(date +%s)
     local timeout=36000  # 10 hours timeout
-    local check_interval=30  # Check every 30 seconds
+    local check_interval=600  # Check every 30 seconds
     local elapsed=0
-    
+
     # Show initial logs
     sleep 5
     echo "[$(get_timestamp)] Showing job logs..."
-    
-    # Wait for job to complete with deployment monitoring
+
+    # Wait for job to complete
     local job_completed=false
     while [ ${elapsed} -lt ${timeout} ]; do
-        # Check if job is complete
-        if kubectl get job "${job_name}" -n ${NAMESPACE} -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' | grep -q "True"; then
+        # Check if job is complete (with error handling for VPN disconnections)
+        if kubectl get job "${job_name}" -n ${NAMESPACE} -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null | grep -q "True"; then
             job_completed=true
             break
         fi
         
-        # Check if job failed
-        if kubectl get job "${job_name}" -n ${NAMESPACE} -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' | grep -q "True"; then
+        # Check if job failed (with error handling for VPN disconnections)
+        if kubectl get job "${job_name}" -n ${NAMESPACE} -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null | grep -q "True"; then
             job_completed=true
             break
         fi
         
-        # Check if deployments are ok
-        if [ "$(cat "${deployments_ok_file}")" = "false" ]; then
+        # Show logs periodically (with error handling for VPN disconnections)
+        if [ $((elapsed % 60)) -eq 0 ]; then
             echo ""
-            echo "[$(get_timestamp)] ERROR: Dependent deployments failed!"
-            echo "[$(get_timestamp)] Cancelling current evaluation job..."
-            
-            # Delete the job
-            kubectl delete job "${job_name}" --ignore-not-found=true -n ${NAMESPACE}
-            
-            # Restart deployments
-            echo "[$(get_timestamp)] Restarting deployments..."
-            if restart_deployments; then
-                echo "[$(get_timestamp)] Deployments restarted successfully!"
-                echo "[$(get_timestamp)] Restarting evaluation job..."
-                
-                # Recreate the job
-                kubectl create -f "${job_file}" -n ${NAMESPACE}
-                
-                # Get the new job name
-                job_name=$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}')
-                echo "[$(get_timestamp)] New job created: ${job_name}"
-                
-                # Reset deployment monitoring
-                echo "true" > "${deployments_ok_file}"
-                
-                # Restart deployment monitor
-                kill ${monitor_pid} 2>/dev/null
-                (while true; do
-                    if ! check_deployments_ready; then
-                        echo "false" > "${deployments_ok_file}"
-                        break
-                    fi
-                    sleep 60  # Check every 60 seconds
-                done) &
-                monitor_pid=$!
-                
-                # Reset elapsed time
-                elapsed=0
-            else
-                echo "[$(get_timestamp)] ERROR: Failed to restart deployments"
-                kill ${monitor_pid} 2>/dev/null
-                rm "${deployments_ok_file}"
-                return 1
-            fi
+            echo "[$(get_timestamp)] Job still running..."
+            kubectl logs job/"${job_name}" -n ${NAMESPACE} --tail=20 2>/dev/null || echo "[$(get_timestamp)] Unable to fetch logs (may be VPN connection issue)"
+            echo ""
         fi
         
         # Sleep for check interval
@@ -259,20 +252,16 @@ run_evaluation() {
         elapsed=$((elapsed + check_interval))
     done
     
-    # Kill the deployment monitor
-    kill ${monitor_pid} 2>/dev/null
-    rm "${deployments_ok_file}"
-    
     # Check if job completed within timeout
     if [ "${job_completed}" = "false" ]; then
         echo ""
         echo "[$(get_timestamp)] WARNING: Job did not complete within ${timeout} seconds"
-        local job_status=$(kubectl get job "${job_name}" -n ${NAMESPACE} -o jsonpath='{.status.conditions[0].type}')
+        local job_status=$(kubectl get job "${job_name}" -n ${NAMESPACE} -o jsonpath='{.status.conditions[0].type}' 2>/dev/null)
         echo "[$(get_timestamp)] Job status: ${job_status}"
     fi
     
     local end_time=$(get_timestamp)
-    local job_status=$(kubectl get job "${job_name}" -n ${NAMESPACE} -o jsonpath='{.status.conditions[*].type}')
+    local job_status=$(kubectl get job "${job_name}" -n ${NAMESPACE} -o jsonpath='{.status.conditions[*].type}' 2>/dev/null)
     
     echo ""
     echo "Evaluation ${job_status} for ${difficulty}/${workflow}"
@@ -283,19 +272,19 @@ run_evaluation() {
     echo "Results are saved in the container's /root/results directory"
     
     # Get the pod name from the job
-    local pod_name=$(kubectl get pods -l job-name="${job_name}" -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}')
+    local pod_name=$(kubectl get pods -l job-name="${job_name}" -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
     
     # Show final logs
     if [[ "${job_status}" != "Complete" ]]; then
         echo ""
         echo "[$(get_timestamp)] Showing full logs for failed job..."
-        kubectl logs "${pod_name}" -n ${NAMESPACE}
+        kubectl logs "${pod_name}" -n ${NAMESPACE} 2>/dev/null || echo "[$(get_timestamp)] Unable to fetch logs (may be VPN connection issue)"
         echo "=========================================="
         return 1
     else
         echo ""
         echo "[$(get_timestamp)] Showing recent logs..."
-        kubectl logs "${pod_name}" -n ${NAMESPACE} --tail=50
+        kubectl logs "${pod_name}" -n ${NAMESPACE} --tail=50 2>/dev/null || echo "[$(get_timestamp)] Unable to fetch logs (may be VPN connection issue)"
         echo "=========================================="
         return 0
     fi
@@ -485,9 +474,15 @@ main() {
                     echo "kubectl create -f \"${job_file}\" -n ${NAMESPACE}"
                     echo "# Monitor job until completion (10 hours timeout)"
                     echo "# Show logs while waiting"
-                    echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
-                    echo "kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE}"
-                    echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
+                    if [ -n "${JUDGE_MODEL_DIR}" ] && [ "${JUDGE_MODEL_DIR}" = "kimi-2-thinking" ]; then
+                        echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
+                        echo "kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE}"
+                        echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
+                    else
+                        echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
+                        echo "kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE}"
+                        echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
+                    fi
                     echo ""
                 done
             done
@@ -519,9 +514,15 @@ main() {
                 echo "kubectl create -f \"${job_file}\" -n ${NAMESPACE}"
                 echo "# Monitor job until completion (10 hours timeout)"
                 echo "# Show logs while waiting"
-                echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
-                echo "kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE}"
-                echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
+                if [ -n "${JUDGE_MODEL_DIR}" ] && [ "${JUDGE_MODEL_DIR}" = "kimi-2-thinking" ]; then
+                    echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
+                    echo "kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE}"
+                    echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
+                else
+                    echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
+                    echo "kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE}"
+                    echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
+                fi
                 echo ""
             done
         elif [ -n "${difficulty}" ] && [ -z "${workflow}" ]; then
@@ -552,9 +553,15 @@ main() {
                 echo "kubectl create -f \"${job_file}\" -n ${NAMESPACE}"
                 echo "# Monitor job until completion (10 hours timeout)"
                 echo "# Show logs while waiting"
-                echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
-                echo "kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE}"
-                echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
+                if [ -n "${JUDGE_MODEL_DIR}" ] && [ "${JUDGE_MODEL_DIR}" = "kimi-2-thinking" ]; then
+                    echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
+                    echo "kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE}"
+                    echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
+                else
+                    echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
+                    echo "kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE}"
+                    echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
+                fi
                 echo ""
             done
         else
@@ -597,8 +604,13 @@ main() {
                 echo "kubectl create -f \"${job_file}\" -n ${NAMESPACE}"
                 echo "# Monitor job until completion (10 hours timeout)"
                 echo "# Show logs while waiting"
-                echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
-                echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
+                if [ -n "${JUDGE_MODEL_DIR}" ] && [ "${JUDGE_MODEL_DIR}" = "kimi-2-thinking" ]; then
+                    echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
+                    echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
+                else
+                    echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
+                    echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
+                fi
             else
                 echo "ERROR: Both --difficulty and --workflow must be specified, or use --all"
                 print_usage

@@ -1,18 +1,17 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: foldagent-eval-search-medium-kimi-k2-thinking-v0-74
+  name: foldagent-eval-search-branch-easy-kimi-k2-thinking
   namespace: liuyunxin
 spec:
   template:
     metadata:
       labels:
-        app: foldagent-eval-search-medium-kimi-k2-thinking-v0-74
+        app: foldagent-eval-search-branch-easy-kimi-k2-thinking
     spec:
       containers:
-      - name: foldagent-eval-search-hard-kimi-k2-thinking
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.74-log-llmbackend
-        imagePullPolicy: Always
+      - name: foldagent-eval-search-branch-easy-kimi-k2-thinking
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.73-log-llmbackend
         ports:
         - containerPort: 8000
           name: metrics
@@ -20,7 +19,7 @@ spec:
         args:
           - >
             python3 scripts/eval_bc.py
-            --workflow search
+            --workflow search_branch
             --model_name ByteDance-Seed/Seed-OSS-36B-Instruct 
             --local_search_url http://search-server.liuyunxin:8000 
             --data_path /app/data/bc_test.parquet 
@@ -32,7 +31,7 @@ spec:
             --val_max_turn 200 
             --max_session 10 
             --val_max_session 10 
-            --difficulty hard
+            --difficulty easy
         resources:
           limits: 
             memory: "64Gi"

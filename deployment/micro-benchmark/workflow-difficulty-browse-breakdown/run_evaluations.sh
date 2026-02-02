@@ -5,6 +5,7 @@ NAMESPACE="liuyunxin"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOYMENT_DIR="${SCRIPT_DIR}"
 JUDGE_MODEL_DIR=""
+VERSION_SUFFIX=""
 
 # Paths to dependent deployments
 SGLANG_DEPLOYMENT="/Users/rexsasori/FoldAgent/deployment/sglang/sglang-deployment.yaml"
@@ -149,6 +150,9 @@ run_evaluation() {
     if [ -n "${JUDGE_MODEL_DIR}" ]; then
         echo "  Judge Model: ${JUDGE_MODEL_DIR}"
     fi
+    if [ -n "${VERSION_SUFFIX}" ]; then
+        echo "  Version: ${VERSION_SUFFIX}"
+    fi
     echo "=========================================="
     
     if [ ! -f "${job_file}" ]; then
@@ -175,6 +179,11 @@ run_evaluation() {
             # Default to the basic selector
             label_selector="app=foldagent-eval-${workflow//_/-}-${difficulty}"
         fi
+    fi
+    
+    # Append version suffix if specified
+    if [ -n "${VERSION_SUFFIX}" ]; then
+        label_selector="${label_selector}-${VERSION_SUFFIX}"
     fi
     local job_name=$(kubectl get jobs -l "${label_selector}" -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}')
     
@@ -353,6 +362,7 @@ print_usage() {
     echo "  -d, --difficulty DIFF   Run specific difficulty (easy|medium|hard)"
     echo "  -w, --workflow WORKFLOW  Run specific workflow (search|search_branch)"
     echo "  -j, --judge-model DIR   Judge model directory (e.g., gpt-5-judge, kimi-2-thinking)"
+    echo "  -v, --version SUFFIX    Version suffix for job names (e.g., v0-74)"
     echo "  -a, --all               Run all combinations (3 difficulties × 2 workflows)"
     echo "  -r, --restart-only      Only restart deployments, don't run evaluation"
     echo "  -n, --dry-run           Dry run (show what would be executed)"
@@ -363,6 +373,7 @@ print_usage() {
     echo "  $0 --difficulty easy --workflow search --judge-model kimi-2-thinking"
     echo "  $0 --all"
     echo "  $0 --all --judge-model gpt-5-judge"
+    echo "  $0 --all --judge-model kimi-2-thinking --version v0-74"
     echo "  $0 --restart-only"
     echo "  $0 --difficulty easy --workflow search --dry-run"
 }
@@ -386,6 +397,10 @@ main() {
                 ;;
             -j|--judge-model)
                 JUDGE_MODEL_DIR="$2"
+                shift 2
+                ;;
+            -v|--version)
+                VERSION_SUFFIX="$2"
                 shift 2
                 ;;
             -a|--all)
@@ -460,6 +475,9 @@ main() {
             if [ -n "${JUDGE_MODEL_DIR}" ]; then
                 echo "Judge Model: ${JUDGE_MODEL_DIR}"
             fi
+            if [ -n "${VERSION_SUFFIX}" ]; then
+                echo "Version Suffix: ${VERSION_SUFFIX}"
+            fi
             echo ""
             echo "For each evaluation, would execute:"
             echo "1. Restart deployments (as shown above)"
@@ -474,15 +492,16 @@ main() {
                     echo "kubectl create -f \"${job_file}\" -n ${NAMESPACE}"
                     echo "# Monitor job until completion (10 hours timeout)"
                     echo "# Show logs while waiting"
+                    local label_selector="app=foldagent-eval-${workflow//_/-}-${difficulty}"
                     if [ -n "${JUDGE_MODEL_DIR}" ] && [ "${JUDGE_MODEL_DIR}" = "kimi-2-thinking" ]; then
-                        echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
-                        echo "kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE}"
-                        echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
-                    else
-                        echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
-                        echo "kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE}"
-                        echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
+                        label_selector="app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking"
                     fi
+                    if [ -n "${VERSION_SUFFIX}" ]; then
+                        label_selector="${label_selector}-${VERSION_SUFFIX}"
+                    fi
+                    echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l ${label_selector} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
+                    echo "kubectl get pods -l job-name=\$(kubectl get jobs -l ${label_selector} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE}"
+                    echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l ${label_selector} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
                     echo ""
                 done
             done
@@ -540,6 +559,9 @@ main() {
             if [ -n "${JUDGE_MODEL_DIR}" ]; then
                 echo "Judge Model: ${JUDGE_MODEL_DIR}"
             fi
+            if [ -n "${VERSION_SUFFIX}" ]; then
+                echo "Version Suffix: ${VERSION_SUFFIX}"
+            fi
             echo ""
             echo "For each evaluation, would execute:"
             echo "1. Restart deployments (as shown above)"
@@ -580,6 +602,9 @@ main() {
                 if [ -n "${JUDGE_MODEL_DIR}" ]; then
                     echo "Judge Model: ${JUDGE_MODEL_DIR}"
                 fi
+                if [ -n "${VERSION_SUFFIX}" ]; then
+                    echo "Version Suffix: ${VERSION_SUFFIX}"
+                fi
                 echo ""
                 echo "Commands that would be executed:"
                 echo ""
@@ -604,13 +629,15 @@ main() {
                 echo "kubectl create -f \"${job_file}\" -n ${NAMESPACE}"
                 echo "# Monitor job until completion (10 hours timeout)"
                 echo "# Show logs while waiting"
+                local label_selector="app=foldagent-eval-${workflow//_/-}-${difficulty}"
                 if [ -n "${JUDGE_MODEL_DIR}" ] && [ "${JUDGE_MODEL_DIR}" = "kimi-2-thinking" ]; then
-                    echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
-                    echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
-                else
-                    echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
-                    echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
+                    label_selector="app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking"
                 fi
+                if [ -n "${VERSION_SUFFIX}" ]; then
+                    label_selector="${label_selector}-${VERSION_SUFFIX}"
+                fi
+                echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l ${label_selector} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
+                echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l ${label_selector} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
             else
                 echo "ERROR: Both --difficulty and --workflow must be specified, or use --all"
                 print_usage

@@ -208,9 +208,9 @@ def main():
 
     # Split for workers
     logger.info(f"Splitting data into {args.num_workers} chunks")
-    chunk_size = len(df) // args.num_workers
-    chunks = [df.iloc[i*chunk_size:(i+1)*chunk_size if i < args.num_workers-1 else len(df)]
-              for i in range(args.num_workers)]
+    chunks = np.array_split(df, args.num_workers)
+    # Convert numpy arrays back to DataFrames to support .iloc indexing
+    chunks = [pd.DataFrame(chunk) if isinstance(chunk, np.ndarray) else chunk for chunk in chunks]
     logger.info(f"Created {len(chunks)} chunks with sizes: {[len(c) for c in chunks]}")
 
     # Run workers with progress bar

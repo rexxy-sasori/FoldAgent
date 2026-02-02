@@ -1,20 +1,16 @@
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: batch/v1
+kind: Job
 metadata:
-  name: foldagent-eval-search-easy
+  name: foldagent-eval-search-medium-kimi-k2-thinking
   namespace: liuyunxin
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: foldagent-eval-search-easy
   template:
     metadata:
       labels:
-        app: foldagent-eval-search-easy
+        app: foldagent-eval-search-medium-kimi-k2-thinking
     spec:
       containers:
-      - name: foldagent-eval-search-easy
+      - name: foldagent-eval-search-medium-kimi-k2-thinking
         image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.73-log-llmbackend
         ports:
         - containerPort: 8000
@@ -35,8 +31,7 @@ spec:
             --val_max_turn 200 
             --max_session 10 
             --val_max_session 10 
-            --difficulty easy
-            && sleep infinity
+            --difficulty medium
         resources:
           limits: 
             memory: "64Gi"
@@ -60,13 +55,13 @@ spec:
           valueFrom:
             secretKeyRef:
               name: foldagent-eval-secrets
-              key: research-group-api-key
+              key: judge-openai-api-key
         - name: JUDGE_OPENAI_BASE_URL
-          value: "https://lonlie.plus7.plus/v1"
+          value: "https://api.moonshot.cn/v1"
         - name: JUDGE_OPENAI_URL
-          value: "https://lonlie.plus7.plus/v1/chat/completions"
+          value: "https://api.moonshot.cn/v1/chat/completions"
         - name: JUDGE_OPENAI_MODEL
-          value: "gpt-5"
+          value: "kimi-k2-thinking"
         - name: NO_PROXY
           value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
         - name: no_proxy
@@ -93,7 +88,7 @@ spec:
         - name: PIP_TRUSTED_HOST
           value: "192.168.12.70"
         - name: LOG_LEVEL
-          value: "DEBUG"
+          value: "INFO"
         - name: HF_HOME
           value: "/root/.cache/huggingface"
         - name: DATABASE_URL
@@ -108,4 +103,4 @@ spec:
       - name: gpfshome
         persistentVolumeClaim:
           claimName: pvc-gpfshome-liuyunxin
-      restartPolicy: Always
+      restartPolicy: OnFailure

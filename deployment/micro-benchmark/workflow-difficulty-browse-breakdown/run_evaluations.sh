@@ -4,6 +4,7 @@ set -e
 NAMESPACE="liuyunxin"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOYMENT_DIR="${SCRIPT_DIR}"
+JUDGE_MODEL_DIR=""
 
 # Paths to dependent deployments
 SGLANG_DEPLOYMENT="/Users/rexsasori/FoldAgent/deployment/sglang/sglang-deployment.yaml"
@@ -18,6 +19,39 @@ echo "=========================================="
 # Function to get current timestamp
 get_timestamp() {
     date '+%Y-%m-%d %H:%M:%S'
+}
+
+check_deployments_ready() {
+    # Check if sglang deployment is ready
+    echo "[$(get_timestamp)] Checking sglang deployment status..."
+    if ! kubectl rollout status deployment sglang -n ${NAMESPACE} --timeout=120s > /dev/null 2>&1; then
+        echo "[$(get_timestamp)] ERROR: sglang deployment not ready"
+        return 1
+    fi
+    
+    # Check if sglang pods are ready
+    echo "[$(get_timestamp)] Verifying sglang pods are ready..."
+    if ! kubectl wait --for=condition=ready pod -l app=sglang -n ${NAMESPACE} --timeout=60s > /dev/null 2>&1; then
+        echo "[$(get_timestamp)] ERROR: sglang pods not ready within timeout"
+        return 1
+    fi
+    
+    # Check if search-server deployment is ready
+    echo "[$(get_timestamp)] Checking search-server deployment status..."
+    if ! kubectl rollout status deployment search-server -n ${NAMESPACE} --timeout=120s > /dev/null 2>&1; then
+        echo "[$(get_timestamp)] ERROR: search-server deployment not ready"
+        return 1
+    fi
+    
+    # Check if search-server pods are ready
+    echo "[$(get_timestamp)] Verifying search-server pods are ready..."
+    if ! kubectl wait --for=condition=ready pod -l app=search-server -n ${NAMESPACE} --timeout=60s > /dev/null 2>&1; then
+        echo "[$(get_timestamp)] ERROR: search-server pods not ready within timeout"
+        return 1
+    fi
+    
+    echo "[$(get_timestamp)] All dependent deployments are ready!"
+    return 0
 }
 
 restart_deployments() {
@@ -98,7 +132,12 @@ run_evaluation() {
     local workflow=$2
     local start_time=$(get_timestamp)
     
-    local job_file="${DEPLOYMENT_DIR}/eval-job-${workflow}-${difficulty}.yaml"
+    local job_dir="${DEPLOYMENT_DIR}"
+    if [ -n "${JUDGE_MODEL_DIR}" ]; then
+        job_dir="${DEPLOYMENT_DIR}/${JUDGE_MODEL_DIR}"
+    fi
+    
+    local job_file="${job_dir}/eval-job-${workflow}-${difficulty}.yaml"
     
     echo ""
     echo "=========================================="
@@ -107,6 +146,9 @@ run_evaluation() {
     echo "  Workflow: ${workflow}"
     echo "  Job: ${job_file}"
     echo "  Start Time: ${start_time}"
+    if [ -n "${JUDGE_MODEL_DIR}" ]; then
+        echo "  Judge Model: ${JUDGE_MODEL_DIR}"
+    fi
     echo "=========================================="
     
     if [ ! -f "${job_file}" ]; then
@@ -121,25 +163,113 @@ run_evaluation() {
     kubectl create -f "${job_file}" -n ${NAMESPACE}
     
     # Get the job name
-    local job_name=$(kubectl get jobs -l app=foldagent-eval-${workflow}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}')
+    local job_name=$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}')
     
     echo "[$(get_timestamp)] Monitoring job progress..."
     echo "[$(get_timestamp)] Waiting for job to complete..."
     
+    # Create a temporary file to signal deployment issues
+    local deployments_ok_file=$(mktemp)
+    echo "true" > "${deployments_ok_file}"
+    
+    # Start background process to monitor deployments
+    (while true; do
+        if ! check_deployments_ready; then
+            echo "false" > "${deployments_ok_file}"
+            break
+        fi
+        sleep 60  # Check every 60 seconds
+    done) &
+    
+    local monitor_pid=$!
+    
     # Monitor job logs while waiting
     local start_wait=$(date +%s)
     local timeout=36000  # 10 hours timeout
+    local check_interval=30  # Check every 30 seconds
+    local elapsed=0
     
     # Show initial logs
     sleep 5
     echo "[$(get_timestamp)] Showing job logs..."
     
-    # Wait for job to complete
-    kubectl wait --for=condition=complete job "${job_name}" --timeout=${timeout}s -n ${NAMESPACE} || {
+    # Wait for job to complete with deployment monitoring
+    local job_completed=false
+    while [ ${elapsed} -lt ${timeout} ]; do
+        # Check if job is complete
+        if kubectl get job "${job_name}" -n ${NAMESPACE} -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' | grep -q "True"; then
+            job_completed=true
+            break
+        fi
+        
+        # Check if job failed
+        if kubectl get job "${job_name}" -n ${NAMESPACE} -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' | grep -q "True"; then
+            job_completed=true
+            break
+        fi
+        
+        # Check if deployments are ok
+        if [ "$(cat "${deployments_ok_file}")" = "false" ]; then
+            echo ""
+            echo "[$(get_timestamp)] ERROR: Dependent deployments failed!"
+            echo "[$(get_timestamp)] Cancelling current evaluation job..."
+            
+            # Delete the job
+            kubectl delete job "${job_name}" --ignore-not-found=true -n ${NAMESPACE}
+            
+            # Restart deployments
+            echo "[$(get_timestamp)] Restarting deployments..."
+            if restart_deployments; then
+                echo "[$(get_timestamp)] Deployments restarted successfully!"
+                echo "[$(get_timestamp)] Restarting evaluation job..."
+                
+                # Recreate the job
+                kubectl create -f "${job_file}" -n ${NAMESPACE}
+                
+                # Get the new job name
+                job_name=$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}')
+                echo "[$(get_timestamp)] New job created: ${job_name}"
+                
+                # Reset deployment monitoring
+                echo "true" > "${deployments_ok_file}"
+                
+                # Restart deployment monitor
+                kill ${monitor_pid} 2>/dev/null
+                (while true; do
+                    if ! check_deployments_ready; then
+                        echo "false" > "${deployments_ok_file}"
+                        break
+                    fi
+                    sleep 60  # Check every 60 seconds
+                done) &
+                monitor_pid=$!
+                
+                # Reset elapsed time
+                elapsed=0
+            else
+                echo "[$(get_timestamp)] ERROR: Failed to restart deployments"
+                kill ${monitor_pid} 2>/dev/null
+                rm "${deployments_ok_file}"
+                return 1
+            fi
+        fi
+        
+        # Sleep for check interval
+        sleep ${check_interval}
+        elapsed=$((elapsed + check_interval))
+    done
+    
+    # Kill the deployment monitor
+    kill ${monitor_pid} 2>/dev/null
+    rm "${deployments_ok_file}"
+    
+    # Check if job completed within timeout
+    if [ "${job_completed}" = "false" ]; then
+        echo ""
         echo "[$(get_timestamp)] WARNING: Job did not complete within ${timeout} seconds"
         local job_status=$(kubectl get job "${job_name}" -n ${NAMESPACE} -o jsonpath='{.status.conditions[0].type}')
         echo "[$(get_timestamp)] Job status: ${job_status}"
-    }
+    fi
     
     local end_time=$(get_timestamp)
     local job_status=$(kubectl get job "${job_name}" -n ${NAMESPACE} -o jsonpath='{.status.conditions[*].type}')
@@ -233,6 +363,7 @@ print_usage() {
     echo "Options:"
     echo "  -d, --difficulty DIFF   Run specific difficulty (easy|medium|hard)"
     echo "  -w, --workflow WORKFLOW  Run specific workflow (search|search_branch)"
+    echo "  -j, --judge-model DIR   Judge model directory (e.g., gpt-5-judge, kimi-2-thinking)"
     echo "  -a, --all               Run all combinations (3 difficulties × 2 workflows)"
     echo "  -r, --restart-only      Only restart deployments, don't run evaluation"
     echo "  -n, --dry-run           Dry run (show what would be executed)"
@@ -240,7 +371,9 @@ print_usage() {
     echo ""
     echo "Examples:"
     echo "  $0 --difficulty easy --workflow search"
+    echo "  $0 --difficulty easy --workflow search --judge-model kimi-2-thinking"
     echo "  $0 --all"
+    echo "  $0 --all --judge-model gpt-5-judge"
     echo "  $0 --restart-only"
     echo "  $0 --difficulty easy --workflow search --dry-run"
 }
@@ -260,6 +393,10 @@ main() {
                 ;;
             -w|--workflow)
                 workflow="$2"
+                shift 2
+                ;;
+            -j|--judge-model)
+                JUDGE_MODEL_DIR="$2"
                 shift 2
                 ;;
             -a|--all)
@@ -321,12 +458,19 @@ main() {
         elif ${run_all}; then
             local difficulties=("easy" "medium" "hard")
             local workflows=("search" "search_branch")
+            local job_dir="${DEPLOYMENT_DIR}"
+            if [ -n "${JUDGE_MODEL_DIR}" ]; then
+                job_dir="${DEPLOYMENT_DIR}/${JUDGE_MODEL_DIR}"
+            fi
             
             echo "Would run all evaluations:"
             echo "=========================================="
             echo "Difficulties: easy, medium, hard"
             echo "Workflows: search, search_branch"
             echo "Total: 6 evaluations"
+            if [ -n "${JUDGE_MODEL_DIR}" ]; then
+                echo "Judge Model: ${JUDGE_MODEL_DIR}"
+            fi
             echo ""
             echo "For each evaluation, would execute:"
             echo "1. Restart deployments (as shown above)"
@@ -335,26 +479,100 @@ main() {
             
             for workflow in "${workflows[@]}"; do
                 for difficulty in "${difficulties[@]}"; do
-                    local job_file="${DEPLOYMENT_DIR}/eval-job-${workflow}-${difficulty}.yaml"
+                    local job_file="${job_dir}/eval-job-${workflow}-${difficulty}.yaml"
                     echo "# ${workflow} - ${difficulty}"
                     echo "kubectl delete -f \"${job_file}\" --ignore-not-found=true -n ${NAMESPACE}"
                     echo "kubectl create -f \"${job_file}\" -n ${NAMESPACE}"
                     echo "# Monitor job until completion (10 hours timeout)"
                     echo "# Show logs while waiting"
-                    echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
-                    echo "kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE}"
-                    echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
+                    echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
+                    echo "kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE}"
+                    echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
                     echo ""
                 done
             done
+        elif [ -n "${workflow}" ] && [ -z "${difficulty}" ]; then
+            local difficulties=("easy" "medium" "hard")
+            local job_dir="${DEPLOYMENT_DIR}"
+            if [ -n "${JUDGE_MODEL_DIR}" ]; then
+                job_dir="${DEPLOYMENT_DIR}/${JUDGE_MODEL_DIR}"
+            fi
+            
+            echo "Would run all difficulties for workflow ${workflow}:"
+            echo "=========================================="
+            echo "Difficulties: easy, medium, hard"
+            echo "Workflow: ${workflow}"
+            echo "Total: 3 evaluations"
+            if [ -n "${JUDGE_MODEL_DIR}" ]; then
+                echo "Judge Model: ${JUDGE_MODEL_DIR}"
+            fi
+            echo ""
+            echo "For each evaluation, would execute:"
+            echo "1. Restart deployments (as shown above)"
+            echo "2. Run evaluation with commands:"
+            echo ""
+            
+            for difficulty in "${difficulties[@]}"; do
+                local job_file="${job_dir}/eval-job-${workflow}-${difficulty}.yaml"
+                echo "# ${workflow} - ${difficulty}"
+                echo "kubectl delete -f \"${job_file}\" --ignore-not-found=true -n ${NAMESPACE}"
+                echo "kubectl create -f \"${job_file}\" -n ${NAMESPACE}"
+                echo "# Monitor job until completion (10 hours timeout)"
+                echo "# Show logs while waiting"
+                echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
+                echo "kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE}"
+                echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
+                echo ""
+            done
+        elif [ -n "${difficulty}" ] && [ -z "${workflow}" ]; then
+            local workflows=("search" "search_branch")
+            local job_dir="${DEPLOYMENT_DIR}"
+            if [ -n "${JUDGE_MODEL_DIR}" ]; then
+                job_dir="${DEPLOYMENT_DIR}/${JUDGE_MODEL_DIR}"
+            fi
+            
+            echo "Would run all workflows for difficulty ${difficulty}:"
+            echo "=========================================="
+            echo "Difficulty: ${difficulty}"
+            echo "Workflows: search, search_branch"
+            echo "Total: 2 evaluations"
+            if [ -n "${JUDGE_MODEL_DIR}" ]; then
+                echo "Judge Model: ${JUDGE_MODEL_DIR}"
+            fi
+            echo ""
+            echo "For each evaluation, would execute:"
+            echo "1. Restart deployments (as shown above)"
+            echo "2. Run evaluation with commands:"
+            echo ""
+            
+            for workflow in "${workflows[@]}"; do
+                local job_file="${job_dir}/eval-job-${workflow}-${difficulty}.yaml"
+                echo "# ${workflow} - ${difficulty}"
+                echo "kubectl delete -f \"${job_file}\" --ignore-not-found=true -n ${NAMESPACE}"
+                echo "kubectl create -f \"${job_file}\" -n ${NAMESPACE}"
+                echo "# Monitor job until completion (10 hours timeout)"
+                echo "# Show logs while waiting"
+                echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
+                echo "kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE}"
+                echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
+                echo ""
+            done
         else
             if [ -n "${difficulty}" ] && [ -n "${workflow}" ]; then
-                local job_file="${DEPLOYMENT_DIR}/eval-job-${workflow}-${difficulty}.yaml"
+                local job_dir="${DEPLOYMENT_DIR}"
+                if [ -n "${JUDGE_MODEL_DIR}" ]; then
+                    job_dir="${DEPLOYMENT_DIR}/${JUDGE_MODEL_DIR}"
+                fi
+                
+                local job_file="${job_dir}/eval-job-${workflow}-${difficulty}.yaml"
                 echo "Would run evaluation:"
                 echo "=========================================="
                 echo "Difficulty: ${difficulty}"
                 echo "Workflow: ${workflow}"
                 echo "Job: ${job_file}"
+                if [ -n "${JUDGE_MODEL_DIR}" ]; then
+                    echo "Judge Model: ${JUDGE_MODEL_DIR}"
+                fi
                 echo ""
                 echo "Commands that would be executed:"
                 echo ""
@@ -379,8 +597,8 @@ main() {
                 echo "kubectl create -f \"${job_file}\" -n ${NAMESPACE}"
                 echo "# Monitor job until completion (10 hours timeout)"
                 echo "# Show logs while waiting"
-                echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
-                echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
+                echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
+                echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
             else
                 echo "ERROR: Both --difficulty and --workflow must be specified, or use --all"
                 print_usage
@@ -424,23 +642,153 @@ main() {
         echo "End Time: ${all_end}"
         echo "=========================================="
         exit ${result}
+    elif [ -n "${workflow}" ] && [ -z "${difficulty}" ]; then
+        local all_start=$(get_timestamp)
+        local difficulties=("easy" "medium" "hard")
+        local succeeded_configs=()
+        local failed_configs=()
+        
+        echo "=========================================="
+        echo "Running all difficulties for workflow ${workflow}"
+        echo "Start Time: ${all_start}"
+        echo "=========================================="
+        
+        for difficulty in "${difficulties[@]}"; do
+            restart_deployments
+            if [ $? -ne 0 ]; then
+                echo "ERROR: Failed to restart deployments for ${workflow}/${difficulty}"
+                failed_configs+=("${workflow}/${difficulty}")
+                continue
+            fi
+            run_evaluation "${difficulty}" "${workflow}"
+            if [ $? -eq 0 ]; then
+                succeeded_configs+=("${workflow}/${difficulty}")
+            else
+                failed_configs+=("${workflow}/${difficulty}")
+            fi
+        done
+        
+        # Display summary
+        echo ""
+        echo "=========================================="
+        echo "Evaluation Summary"
+        echo "=========================================="
+        echo "Total evaluations: $((${#succeeded_configs[@]} + ${#failed_configs[@]}))"
+        echo "Succeeded: ${#succeeded_configs[@]}"
+        echo "Failed: ${#failed_configs[@]}"
+        echo ""
+        
+        if [ ${#succeeded_configs[@]} -gt 0 ]; then
+            echo "Succeeded configurations:"
+            for config in "${succeeded_configs[@]}"; do
+                echo "  ✓ ${config}"
+            done
+        fi
+        
+        if [ ${#failed_configs[@]} -gt 0 ]; then
+            echo ""
+            echo "Failed configurations:"
+            for config in "${failed_configs[@]}"; do
+                echo "  ✗ ${config}"
+            done
+        fi
+        
+        echo "=========================================="
+        
+        # Return error if any failed
+        if [ ${#failed_configs[@]} -gt 0 ]; then
+            exit 1
+        fi
+        
+        local all_end=$(get_timestamp)
+        echo "=========================================="
+        echo "All evaluations completed successfully"
+        echo "Start Time: ${all_start}"
+        echo "End Time: ${all_end}"
+        echo "=========================================="
+        exit 0
+    elif [ -n "${difficulty}" ] && [ -z "${workflow}" ]; then
+        local all_start=$(get_timestamp)
+        local workflows=("search" "search_branch")
+        local succeeded_configs=()
+        local failed_configs=()
+        
+        echo "=========================================="
+        echo "Running all workflows for difficulty ${difficulty}"
+        echo "Start Time: ${all_start}"
+        echo "=========================================="
+        
+        for workflow in "${workflows[@]}"; do
+            restart_deployments
+            if [ $? -ne 0 ]; then
+                echo "ERROR: Failed to restart deployments for ${workflow}/${difficulty}"
+                failed_configs+=("${workflow}/${difficulty}")
+                continue
+            fi
+            run_evaluation "${difficulty}" "${workflow}"
+            if [ $? -eq 0 ]; then
+                succeeded_configs+=("${workflow}/${difficulty}")
+            else
+                failed_configs+=("${workflow}/${difficulty}")
+            fi
+        done
+        
+        # Display summary
+        echo ""
+        echo "=========================================="
+        echo "Evaluation Summary"
+        echo "=========================================="
+        echo "Total evaluations: $((${#succeeded_configs[@]} + ${#failed_configs[@]}))"
+        echo "Succeeded: ${#succeeded_configs[@]}"
+        echo "Failed: ${#failed_configs[@]}"
+        echo ""
+        
+        if [ ${#succeeded_configs[@]} -gt 0 ]; then
+            echo "Succeeded configurations:"
+            for config in "${succeeded_configs[@]}"; do
+                echo "  ✓ ${config}"
+            done
+        fi
+        
+        if [ ${#failed_configs[@]} -gt 0 ]; then
+            echo ""
+            echo "Failed configurations:"
+            for config in "${failed_configs[@]}"; do
+                echo "  ✗ ${config}"
+            done
+        fi
+        
+        echo "=========================================="
+        
+        # Return error if any failed
+        if [ ${#failed_configs[@]} -gt 0 ]; then
+            exit 1
+        fi
+        
+        local all_end=$(get_timestamp)
+        echo "=========================================="
+        echo "All evaluations completed successfully"
+        echo "Start Time: ${all_start}"
+        echo "End Time: ${all_end}"
+        echo "=========================================="
+        exit 0
+    else
+        if [ -z "${difficulty}" ] || [ -z "${workflow}" ]; then
+            echo "ERROR: Both --difficulty and --workflow must be specified, or use --all"
+            print_usage
+            exit 1
+        fi
+        
+        restart_deployments
+        if [ $? -ne 0 ]; then
+            echo "ERROR: Failed to restart deployments"
+            exit 1
+        fi
+        run_evaluation "${difficulty}" "${workflow}"
+        echo "=========================================="
+        echo "End Time: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "=========================================="
     fi
-    
-    if [ -z "${difficulty}" ] || [ -z "${workflow}" ]; then
-        echo "ERROR: Both --difficulty and --workflow must be specified, or use --all"
-        print_usage
-        exit 1
-    fi
-    
-    restart_deployments
-    if [ $? -ne 0 ]; then
-        echo "ERROR: Failed to restart deployments"
-        exit 1
-    fi
-    run_evaluation "${difficulty}" "${workflow}"
-    echo "=========================================="
-    echo "End Time: $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "=========================================="
 }
 
 main "$@"

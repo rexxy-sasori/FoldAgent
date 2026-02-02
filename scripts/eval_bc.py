@@ -79,7 +79,10 @@ def parse_args():
 
 
 async def eval_one(row, config, tokenizer, model_name, run_id):
-    instance_id = row['extra_info'].get('instance_id', 'unknown')
+    extra_info = row.get('extra_info', {})
+    if not isinstance(extra_info, dict):
+        extra_info = {}
+    instance_id = extra_info.get('instance_id', 'unknown')
     item_logger = logging.getLogger(f'eval_bc.item-{instance_id}')
     item_logger.info(f"Starting evaluation for instance_id={instance_id}")
     
@@ -90,10 +93,10 @@ async def eval_one(row, config, tokenizer, model_name, run_id):
     item_logger.debug(f"Creating DataProto for instance")
     item = DataProto()
     item.non_tensor_batch = {
-        'ability': np.array([row['ability']], dtype=object),
-        'extra_info': np.array([row['extra_info']], dtype=object),
+        'ability': np.array([row.get('ability', '')], dtype=object),
+        'extra_info': np.array([extra_info], dtype=object),
         'uid': np.array([instance_id], dtype=object),
-        'reward_model': np.array([row['reward_model']], dtype=object),
+        'reward_model': np.array([row.get('reward_model', '')], dtype=object),
     }
     item.meta_info = {'generation_kwargs': {}, 'max_turn': config.actor_rollout_ref.rollout.plugin.val_max_turn}
 
@@ -161,7 +164,10 @@ async def worker(worker_id, rows, args, pbar, shared_scores, run_id):
 
     results = []
     for idx, row in enumerate(rows):
-        instance_id = row['extra_info'].get('instance_id', 'unknown')
+        extra_info = row.get('extra_info', {})
+        if not isinstance(extra_info, dict):
+            extra_info = {}
+        instance_id = extra_info.get('instance_id', 'unknown')
         worker_logger.info(f"Processing item {idx+1}/{len(rows)}: instance_id={instance_id}")
         
         result = await eval_one(row, config, tokenizer, args.model_name, run_id)

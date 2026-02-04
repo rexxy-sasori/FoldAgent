@@ -10,7 +10,7 @@ spec:
         app: foldagent-eval-search-branch-all-kimi-k2-thinking-v0-74
     spec:
       containers:
-      - name: foldagent-eval-search-medium-kimi-k2-thinking
+      - name: foldagent-eval-search-branch-all-kimi-k2-thinking
         image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.74-log-llmbackend
         imagePullPolicy: Always
         ports:
@@ -20,7 +20,7 @@ spec:
         args:
           - >
             python3 scripts/eval_bc.py
-            --workflow search
+            --workflow search_branch
             --model_name ByteDance-Seed/Seed-OSS-36B-Instruct 
             --local_search_url http://search-server.liuyunxin:8000 
             --data_path /app/data/bc_test.parquet 
@@ -31,8 +31,7 @@ spec:
             --max_turn 200 
             --val_max_turn 200 
             --max_session 10 
-            --val_max_session 10 
-            --difficulty medium
+            --val_max_session 10
         resources:
           limits: 
             memory: "64Gi"

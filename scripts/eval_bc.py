@@ -79,10 +79,7 @@ def parse_args():
 
 
 async def eval_one(row, config, tokenizer, model_name, run_id):
-    extra_info = row.get('extra_info', {})
-    if not isinstance(extra_info, dict):
-        extra_info = {}
-    instance_id = extra_info.get('instance_id', 'unknown')
+    instance_id = row['extra_info'].get('instance_id', 'unknown')
     item_logger = logging.getLogger(f'eval_bc.item-{instance_id}')
     item_logger.info(f"Starting evaluation for instance_id={instance_id}")
     
@@ -93,10 +90,10 @@ async def eval_one(row, config, tokenizer, model_name, run_id):
     item_logger.debug(f"Creating DataProto for instance")
     item = DataProto()
     item.non_tensor_batch = {
-        'ability': np.array([row.get('ability', '')], dtype=object),
-        'extra_info': np.array([extra_info], dtype=object),
+        'ability': np.array([row['ability']], dtype=object),
+        'extra_info': np.array([row['extra_info']], dtype=object),
         'uid': np.array([instance_id], dtype=object),
-        'reward_model': np.array([row.get('reward_model', '')], dtype=object),
+        'reward_model': np.array([row['reward_model']], dtype=object),
     }
     item.meta_info = {'generation_kwargs': {}, 'max_turn': config.actor_rollout_ref.rollout.plugin.val_max_turn}
 
@@ -164,10 +161,7 @@ async def worker(worker_id, rows, args, pbar, shared_scores, run_id):
 
     results = []
     for idx, row in enumerate(rows):
-        extra_info = row.get('extra_info', {})
-        if not isinstance(extra_info, dict):
-            extra_info = {}
-        instance_id = extra_info.get('instance_id', 'unknown')
+        instance_id = row['extra_info'].get('instance_id', 'unknown')
         worker_logger.info(f"Processing item {idx+1}/{len(rows)}: instance_id={instance_id}")
         
         result = await eval_one(row, config, tokenizer, args.model_name, run_id)
@@ -212,11 +206,31 @@ def main():
             logger.info(f"Filtered to {len(filtered_df)} items with data_source containing '{args.difficulty}'")
         df = filtered_df
 
-    # Split for workers
+    # Split for workers with balanced load distribution
     logger.info(f"Splitting data into {args.num_workers} chunks")
-    chunks = np.array_split(df, args.num_workers)
-    # Convert numpy arrays back to DataFrames to support .iloc indexing
-    chunks = [pd.DataFrame(chunk) if isinstance(chunk, np.ndarray) else chunk for chunk in chunks]
+    total_items = len(df)
+    num_workers = args.num_workers
+    
+    # Calculate base chunk size and remainder using only % and // operators
+    base_chunk_size = total_items // num_workers
+    remainder = total_items % num_workers
+    
+    chunks = []
+    start = 0
+    
+    for i in range(num_workers):
+        # Distribute remainder evenly: first 'remainder' workers get 1 extra item
+        current_chunk_size = base_chunk_size + 1 if i < remainder else base_chunk_size
+        end = start + current_chunk_size
+        
+        # Only add chunk if there are items to include
+        if start < total_items:
+            chunks.append(df.iloc[start:end])
+        else:
+            chunks.append(df.iloc[0:0])  # Empty DataFrame for workers with no items
+        
+        start = end
+    
     logger.info(f"Created {len(chunks)} chunks with sizes: {[len(c) for c in chunks]}")
 
     # Run workers with progress bar

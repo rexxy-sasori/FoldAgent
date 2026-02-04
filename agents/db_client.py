@@ -39,8 +39,8 @@ logger = logging.getLogger(__name__)
 
 class EventDB(ABC):
     @abstractmethod
-    async def log_event(self, event_type: str, request_id: str, run_id: str = 'unknown', **kwargs) -> None:
-        """Log an event to the database."""
+    async def log_event(self, event_type: str, request_id: str, run_id: str = 'unknown', **kwargs) -> int:
+        """Log an event to the database and return the event ID."""
         pass
     
     @abstractmethod
@@ -115,6 +115,25 @@ class SQLiteEventDB(EventDB):
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_calls_normalized ON tool_calls (normalized_call)
             ''')
             
+            # Create llm_response_logprobs table to store logprobs separately from JSON
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS llm_response_logprobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT,
+                    event_id INTEGER,
+                    token_idx INTEGER,
+                    logprob REAL
+                )
+            ''')
+            
+            # Create indexes for fast lookup
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_llm_logprobs_run_id ON llm_response_logprobs (run_id)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_llm_logprobs_event_id ON llm_response_logprobs (event_id)
+            ''')
+            
             conn.commit()
             conn.close()
             logger.info(f"Successfully initialized SQLite database tables at {self.db_path}")
@@ -122,29 +141,51 @@ class SQLiteEventDB(EventDB):
             logger.error(f"Failed to initialize SQLite database tables at {self.db_path}: {e}")
             raise
     
-    async def log_event(self, event_type: str, request_id: str, run_id: str = 'unknown', **kwargs) -> None:
-        """Log an event to SQLite database."""
+    async def log_event(self, event_type: str, request_id: str, run_id: str = 'unknown', **kwargs) -> int:
+        """Log an event to SQLite database and return the event ID."""
         try:
             # Generate timestamp when the function is called, not when executed
             timestamp = time.time()
+            
+            # Extract logprobs if present
+            response_log_probs = kwargs.pop('response_log_probs', None)
+            
             event_data = json.dumps(kwargs, ensure_ascii=False)
             
             # Use synchronous sqlite3 in a thread-safe way
             def sync_log():
                 conn = sqlite3.connect(self.db_path)
-                with conn:
-                    conn.execute(
-                        "INSERT INTO events (timestamp, event_type, request_id, run_id, event_data) VALUES (?, ?, ?, ?, ?)",
-                        (timestamp, event_type, request_id, run_id, event_data)
-                    )
+                cursor = conn.cursor()
+                
+                # Insert event and get the generated ID
+                cursor.execute(
+                    "INSERT INTO events (timestamp, event_type, request_id, run_id, event_data) VALUES (?, ?, ?, ?, ?)",
+                    (timestamp, event_type, request_id, run_id, event_data)
+                )
+                event_id = cursor.lastrowid
+                
+                # Store logprobs in separate table if present
+                if response_log_probs and event_type == 'llm_response':
+                    for token_idx, logprob in enumerate(response_log_probs):
+                        cursor.execute(
+                            "INSERT INTO llm_response_logprobs (run_id, event_id, token_idx, logprob) VALUES (?, ?, ?, ?)",
+                            (run_id, event_id, token_idx, logprob)
+                        )
+                
+                conn.commit()
+                conn.close()
+                return event_id
             
             # Run synchronous code in executor
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, sync_log)
-            logger.info(f"Successfully logged event: {event_type} for request_id: {request_id}")
+            event_id = await loop.run_in_executor(None, sync_log)
+            logger.info(f"Successfully logged event: {event_type} for request_id: {request_id} (ID: {event_id})")
+            
+            return event_id
             
         except Exception as e:
             logger.error(f"Failed to log event: {e}")
+            return -1
     
     async def get_events_by_request_id(self, request_id: str, run_id: str = None) -> List[Dict[str, Any]]:
         """Retrieve all events for a specific request ID, optionally filtered by run_id."""
@@ -310,11 +351,13 @@ class DummyEventDB(EventDB):
         self.events = []
         self.tool_calls = {}
     
-    async def log_event(self, event_type: str, request_id: str, run_id: str = 'unknown', **kwargs) -> None:
+    async def log_event(self, event_type: str, request_id: str, run_id: str = 'unknown', **kwargs) -> int:
         try:
             # Generate timestamp when the function is called
             timestamp = time.time()
+            event_id = len(self.events) + 1
             event = {
+                'id': event_id,
                 'timestamp': timestamp,
                 'event_type': event_type,
                 'request_id': request_id,
@@ -322,9 +365,11 @@ class DummyEventDB(EventDB):
                 'event_data': kwargs
             }
             self.events.append(event)
-            logger.info(f"[DummyDB] Successfully logged event: {event_type} for request_id: {request_id}, run_id: {run_id}")
+            logger.info(f"[DummyDB] Successfully logged event: {event_type} for request_id: {request_id}, run_id: {run_id} (ID: {event_id})")
+            return event_id
         except Exception as e:
             logger.error(f"[DummyDB] Failed to log event: {e}")
+            return -1
     
     async def get_events_by_request_id(self, request_id: str, run_id: str = None) -> List[Dict[str, Any]]:
         try:
@@ -415,6 +460,16 @@ if SQLALCHEMY_AVAILABLE:
         first_occurrence_run_id = Column(String, index=True)
         occurrence_count = Column(Integer, default=1)
 
+    class LLMResponseLogprob(Base):
+        """SQLAlchemy model for llm_response_logprobs table."""
+        __tablename__ = "llm_response_logprobs"
+        
+        id = Column(Integer, primary_key=True, index=True)
+        run_id = Column(String, index=True)
+        event_id = Column(Integer, index=True)
+        token_idx = Column(Integer)
+        logprob = Column(Float)
+
     class SQLAlchemyEventDB(EventDB):
         """SQLAlchemy implementation supporting multiple databases via URL."""
         
@@ -449,26 +504,47 @@ if SQLALCHEMY_AVAILABLE:
                 logger.error(f"Failed to initialize database: {e}")
                 raise
         
-        async def log_event(self, event_type: str, request_id: str, run_id: str = 'unknown', **kwargs) -> None:
-            """Log an event to the database."""
+        async def log_event(self, event_type: str, request_id: str, run_id: str = 'unknown', **kwargs) -> int:
+            """Log an event to the database and return the event ID."""
             try:
                 # Generate timestamp when the function is called
                 timestamp = time.time()
+                
+                # Extract logprobs if present
+                response_log_probs = kwargs.pop('response_log_probs', None)
+                
                 event_data = json.dumps(kwargs, ensure_ascii=False)
                 
                 async with self.async_session() as session:
                     async with session.begin():
-                        session.add(Event(
+                        # Create event
+                        event = Event(
                             timestamp=timestamp,
                             event_type=event_type,
                             request_id=request_id,
                             run_id=run_id,
                             event_data=event_data
-                        ))
+                        )
+                        session.add(event)
+                        await session.flush()  # Get event ID
+                        event_id = event.id
+                        
+                        # Store logprobs in separate table if present
+                        if response_log_probs and event_type == 'llm_response':
+                            for token_idx, logprob in enumerate(response_log_probs):
+                                logprob_record = LLMResponseLogprob(
+                                    run_id=run_id,
+                                    event_id=event_id,
+                                    token_idx=token_idx,
+                                    logprob=logprob
+                                )
+                                session.add(logprob_record)
                 
-                logger.info(f"Successfully logged event: {event_type} for request_id: {request_id}, run_id: {run_id}")
+                logger.info(f"Successfully logged event: {event_type} for request_id: {request_id}, run_id: {run_id} (ID: {event_id})")
+                return event_id
             except Exception as e:
                 logger.error(f"Failed to log event: {e}")
+                return -1
         
         async def get_events_by_request_id(self, request_id: str, run_id: str = None) -> List[Dict[str, Any]]:
             """Retrieve all events for a specific request ID, optionally filtered by run_id."""

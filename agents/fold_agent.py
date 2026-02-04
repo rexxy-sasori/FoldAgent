@@ -402,6 +402,37 @@ async def process_item(
             env.get_reward(item, agent['main'].messages(), context), timeout=60 * 10)
         score = (score_msg, reward)
         logger.debug(f'Reward score: {score}')
+        
+        # Log reward evaluation to database
+        try:
+            # Get difficulty if available
+            difficulty = None
+            if 'extra_info' in item.non_tensor_batch and item.non_tensor_batch['extra_info']:
+                extra_info = item.non_tensor_batch['extra_info'][0]
+                if 'difficulty' in extra_info:
+                    difficulty = extra_info['difficulty']
+            elif 'difficulty' in item.non_tensor_batch:
+                difficulty = item.non_tensor_batch['difficulty'][0]
+            
+            # Get question if available
+            question = None
+            if hasattr(env, 'instance_info') and env.instance_info:
+                question = env.instance_info.get('problem_statement', 'unknown')
+            
+            # Get judge model if available
+            judge_model = os.getenv("JUDGE_OPENAI_MODEL", "unknown")
+            
+            await log_event(
+                event_type='reward_evaluation_complete',
+                request_id=request_id,
+                run_id=run_id,
+                question=question,
+                reward_score=reward,
+                judge_openai_model=judge_model,
+                difficulty=difficulty
+            )
+        except Exception as e:
+            logger.error(f"[Error] Logging reward evaluation: {e}")
     except Exception as e:
         logger.error(f"[Error] Getting reward: {e}")
         score, reward_dict = ("", 0), {"ans_reward": 0.0, "format_reward": 0.0, "ref_reward": 0.0}

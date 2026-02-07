@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analysis-script
+  namespace: liuyunxin
+  labels:
+    app: analysis-script
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: analysis-script
+  template:
+    metadata:
+      labels:
+        app: analysis-script
+    spec:
+      containers:
+      - name: analysis-script
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:analysis
+        imagePullPolicy: Always
+        command: ["bash", "-c"]
+        args:
+        - |
+          # Wait for database to be ready
+          sleep 10
+          # Run analysis script with example run IDs
+          # To run with specific run IDs, exec into the pod and run:
+          # python3 scripts/analysis/compare_run_metrics.py <run_id1> <run_id2> --format both
+          echo "Analysis script deployment ready."
+          echo "To run analysis, exec into the pod and run:"
+          echo "python3 scripts/analysis/compare_run_metrics.py <run_id1> <run_id2> --format both"
+          # Keep the pod running
+          tail -f /dev/null
+        resources:
+          limits:
+            memory: "4Gi"
+            cpu: "8"
+          requests:
+            memory: "2Gi"
+            cpu: "8"
+        env:
+        - name: http_proxy
+          value: "http://192.168.3.226:7890"
+        - name: https_proxy
+          value: "http://192.168.3.226:7890"
+        - name: HTTP_PROXY
+          value: "http://192.168.3.226:7890"
+        - name: HTTPS_PROXY
+          value: "http://192.168.3.226:7890"
+        - name: NO_PROXY
+          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+        - name: no_proxy
+          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+        - name: APT_PROXY
+          value: "http://192.168.3.241:3142"
+        - name: PIP_INDEX_URL
+          value: "http://192.168.12.70:9181/repository/pypi-proxy/simple/"
+        - name: PIP_TRUSTED_HOST
+          value: "192.168.12.70"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secrets
+              key: DATABASE_URL
+        volumeMounts:
+        - name: gpfshome
+          mountPath: /root
+      restartPolicy: Always
+      volumes:
+      - name: gpfshome
+        persistentVolumeClaim:
+          claimName: pvc-gpfshome-liuyunxin
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: analysis-script
+  namespace: liuyunxin
+spec:
+  selector:
+    app: analysis-script
+  ports:
+  - port: 8000
+    targetPort: 8000
+  type: ClusterIP

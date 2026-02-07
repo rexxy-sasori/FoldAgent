@@ -1,16 +1,16 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: foldagent-eval-search-branch-easy-gpt-5-v0-81
+  name: foldagent-eval-search-all-gpt-5-v0-81
   namespace: liuyunxin
 spec:
   template:
     metadata:
       labels:
-        app: foldagent-eval-search-branch-easy-gpt-5-v0-81
+        app: foldagent-eval-search-all-gpt-5-v0-81
     spec:
       containers:
-      - name: foldagent-eval-search-branch-easy-gpt-5
+      - name: foldagent-eval-search-all-gpt-5
         image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.81-log-llmbackend
         imagePullPolicy: Always
         ports:
@@ -20,7 +20,7 @@ spec:
         args:
           - >
             python3 scripts/eval_bc.py
-            --workflow search_branch
+            --workflow search
             --model_name ByteDance-Seed/Seed-OSS-36B-Instruct 
             --local_search_url http://search-server.liuyunxin:8000 
             --data_path /app/data/bc_test.parquet 
@@ -31,8 +31,7 @@ spec:
             --max_turn 200 
             --val_max_turn 200 
             --max_session 10 
-            --val_max_session 10 
-            --difficulty easy
+            --val_max_session 10
         resources:
           limits: 
             memory: "64Gi"

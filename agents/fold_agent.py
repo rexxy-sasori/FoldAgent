@@ -413,6 +413,18 @@ async def process_item(
                     difficulty = extra_info['difficulty']
             elif 'difficulty' in item.non_tensor_batch:
                 difficulty = item.non_tensor_batch['difficulty'][0]
+            # Check data_source for difficulty
+            elif 'data_source' in item.non_tensor_batch and item.non_tensor_batch['data_source']:
+                data_source = item.non_tensor_batch['data_source'][0]
+                # Extract difficulty from data_source (e.g., "easy", "medium", "hard")
+                if isinstance(data_source, str):
+                    # Check if data_source contains difficulty keywords
+                    if 'easy' in data_source.lower():
+                        difficulty = 'easy'
+                    elif 'medium' in data_source.lower() or 'meduim' in data_source.lower():
+                        difficulty = 'medium'
+                    elif 'hard' in data_source.lower():
+                        difficulty = 'hard'
             
             # Get question if available
             question = None

@@ -1,17 +1,17 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: foldagent-eval-search-all-kimi-k2-thinking-v0-74
+  name: foldagent-eval-search-all-kimi-k2-thinking-v0-81
   namespace: liuyunxin
 spec:
   template:
     metadata:
       labels:
-        app: foldagent-eval-search-all-kimi-k2-thinking-v0-74
+        app: foldagent-eval-search-all-kimi-k2-thinking-v0-81
     spec:
       containers:
       - name: foldagent-eval-search-all-kimi-k2-thinking
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.74-log-llmbackend
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.81-log-llmbackend
         imagePullPolicy: Always
         ports:
         - containerPort: 8000

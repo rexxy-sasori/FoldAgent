@@ -94,6 +94,7 @@ async def eval_one(row, config, tokenizer, model_name, run_id):
         'extra_info': np.array([row['extra_info']], dtype=object),
         'uid': np.array([instance_id], dtype=object),
         'reward_model': np.array([row['reward_model']], dtype=object),
+        'data_source': np.array([row['data_source']], dtype=object),
     }
     item.meta_info = {'generation_kwargs': {}, 'max_turn': config.actor_rollout_ref.rollout.plugin.val_max_turn}
 

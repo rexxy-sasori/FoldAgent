@@ -1,17 +1,18 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: foldagent-eval-search-branch-medium
+  name: foldagent-eval-search-branch-medium-gpt-5-v0-81
   namespace: liuyunxin
 spec:
   template:
     metadata:
       labels:
-        app: foldagent-eval-search-branch-medium
+        app: foldagent-eval-search-branch-medium-gpt-5-v0-81
     spec:
       containers:
-      - name: foldagent-eval-search-branch-medium
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.73-log-llmbackend
+      - name: foldagent-eval-search-branch-medium-gpt-5
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.81-log-llmbackend
+        imagePullPolicy: Always
         ports:
         - containerPort: 8000
           name: metrics

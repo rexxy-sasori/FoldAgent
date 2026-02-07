@@ -226,7 +226,7 @@ run_evaluation() {
     # Monitor job logs while waiting
     local start_wait=$(date +%s)
     local timeout=36000  # 10 hours timeout
-    local check_interval=600  # Check every 30 seconds
+    local check_interval=60  # Check every 30 seconds
     local elapsed=0
 
     # Show initial logs

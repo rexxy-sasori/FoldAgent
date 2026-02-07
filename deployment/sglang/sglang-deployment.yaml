@@ -60,8 +60,8 @@ spec:
           --host 0.0.0.0 \
           --port 8080 \
           --context-length 49152 \
-          --max-running-requests 32 \
-          --chunked-prefill-size 8192 \
+          --max-running-requests 64 \
+          --chunked-prefill-size 2048 \
           --mem-fraction-static 0.9 \
           --enable-p2p-check \
           --log-level debug \

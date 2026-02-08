@@ -52,18 +52,20 @@ check_deployments_ready() {
         return 1
     fi
     
-    # Check if sglang-qwen-judger deployment is ready
-    echo "[$(get_timestamp)] Checking sglang-qwen-judger deployment status..."
-    if ! kubectl rollout status deployment sglang-qwen-judger -n ${NAMESPACE} --timeout=120s > /dev/null 2>&1; then
-        echo "[$(get_timestamp)] ERROR: sglang-qwen-judger deployment not ready"
-        return 1
-    fi
-    
-    # Check if sglang-qwen-judger pods are ready
-    echo "[$(get_timestamp)] Verifying sglang-qwen-judger pods are ready..."
-    if ! kubectl wait --for=condition=ready pod -l app=sglang-qwen-judger -n ${NAMESPACE} --timeout=60s > /dev/null 2>&1; then
-        echo "[$(get_timestamp)] ERROR: sglang-qwen-judger pods not ready within timeout"
-        return 1
+    # Check if sglang-qwen-judger deployment is ready (only if using qwen-32B judge model)
+    if [ "${JUDGE_MODEL_DIR}" = "qwen-32B" ]; then
+        echo "[$(get_timestamp)] Checking sglang-qwen-judger deployment status..."
+        if ! kubectl rollout status deployment sglang-qwen-judger -n ${NAMESPACE} --timeout=120s > /dev/null 2>&1; then
+            echo "[$(get_timestamp)] ERROR: sglang-qwen-judger deployment not ready"
+            return 1
+        fi
+        
+        # Check if sglang-qwen-judger pods are ready
+        echo "[$(get_timestamp)] Verifying sglang-qwen-judger pods are ready..."
+        if ! kubectl wait --for=condition=ready pod -l app=sglang-qwen-judger -n ${NAMESPACE} --timeout=60s > /dev/null 2>&1; then
+            echo "[$(get_timestamp)] ERROR: sglang-qwen-judger pods not ready within timeout"
+            return 1
+        fi
     fi
     
     echo "[$(get_timestamp)] All dependent deployments are ready!"
@@ -99,15 +101,17 @@ restart_deployments() {
         kubectl rollout restart deployment search-server -n ${NAMESPACE}
     fi
     
-    # Restart sglang-qwen-judger deployment
-    echo "[$(get_timestamp)] Restarting sglang-qwen-judger deployment..."
-    if [ -f "${QWEN_JUDGER_DEPLOYMENT}" ]; then
-        kubectl delete -f "${QWEN_JUDGER_DEPLOYMENT}" --ignore-not-found=true -n ${NAMESPACE}
-        kubectl apply -f "${QWEN_JUDGER_DEPLOYMENT}" -n ${NAMESPACE}
-    else
-        echo "[$(get_timestamp)] WARNING: sglang-qwen-judger deployment file not found: ${QWEN_JUDGER_DEPLOYMENT}"
-        echo "[$(get_timestamp)] Attempting to restart existing deployment..."
-        kubectl rollout restart deployment sglang-qwen-judger -n ${NAMESPACE}
+    # Restart sglang-qwen-judger deployment (only if using qwen-32B judge model)
+    if [ "${JUDGE_MODEL_DIR}" = "qwen-32B" ]; then
+        echo "[$(get_timestamp)] Restarting sglang-qwen-judger deployment..."
+        if [ -f "${QWEN_JUDGER_DEPLOYMENT}" ]; then
+            kubectl delete -f "${QWEN_JUDGER_DEPLOYMENT}" --ignore-not-found=true -n ${NAMESPACE}
+            kubectl apply -f "${QWEN_JUDGER_DEPLOYMENT}" -n ${NAMESPACE}
+        else
+            echo "[$(get_timestamp)] WARNING: sglang-qwen-judger deployment file not found: ${QWEN_JUDGER_DEPLOYMENT}"
+            echo "[$(get_timestamp)] Attempting to restart existing deployment..."
+            kubectl rollout restart deployment sglang-qwen-judger -n ${NAMESPACE}
+        fi
     fi
     
     echo "[$(get_timestamp)] Waiting for deployments to be ready..."
@@ -142,26 +146,31 @@ restart_deployments() {
     
     fi
     
-    # Wait for sglang-qwen-judger deployment to be ready
-    echo "[$(get_timestamp)] Checking sglang-qwen-judger deployment status..."
-    kubectl rollout status deployment sglang-qwen-judger -n ${NAMESPACE} --timeout=600s
-    
-    # Verify sglang-qwen-judger pods are ready using kubectl wait
-    echo "[$(get_timestamp)] Verifying sglang-qwen-judger pods are ready..."
-    if kubectl wait --for=condition=ready pod -l app=sglang-qwen-judger -n ${NAMESPACE} --timeout=300s; then
-        echo "[$(get_timestamp)] sglang-qwen-judger deployment is ready!"
-    else
-        echo "[$(get_timestamp)] ERROR: sglang-qwen-judger pods not ready within timeout"
-        echo "[$(get_timestamp)] Evaluation cannot proceed without sglang-qwen-judger deployment"
-        return 1
-    
+    # Wait for sglang-qwen-judger deployment to be ready (only if using qwen-32B judge model)
+    if [ "${JUDGE_MODEL_DIR}" = "qwen-32B" ]; then
+        echo "[$(get_timestamp)] Checking sglang-qwen-judger deployment status..."
+        kubectl rollout status deployment sglang-qwen-judger -n ${NAMESPACE} --timeout=600s
+        
+        # Verify sglang-qwen-judger pods are ready using kubectl wait
+        echo "[$(get_timestamp)] Verifying sglang-qwen-judger pods are ready..."
+        if kubectl wait --for=condition=ready pod -l app=sglang-qwen-judger -n ${NAMESPACE} --timeout=300s; then
+            echo "[$(get_timestamp)] sglang-qwen-judger deployment is ready!"
+        else
+            echo "[$(get_timestamp)] ERROR: sglang-qwen-judger pods not ready within timeout"
+            echo "[$(get_timestamp)] Evaluation cannot proceed without sglang-qwen-judger deployment"
+            return 1
+        
+        fi
     fi
     
     # Verify services are reachable
     echo "[$(get_timestamp)] Checking if services are reachable..."
     echo "[$(get_timestamp)] sglang service: http://sglang.liuyunxin:8080"
     echo "[$(get_timestamp)] search-server service: http://search-server.liuyunxin:8000"
-    echo "[$(get_timestamp)] sglang-qwen-judger service: http://sglang-qwen-judger.liuyunxin:8080"
+    # Only show sglang-qwen-judger service if using qwen-32B judge model
+    if [ "${JUDGE_MODEL_DIR}" = "qwen-32B" ]; then
+        echo "[$(get_timestamp)] sglang-qwen-judger service: http://sglang-qwen-judger.liuyunxin:8080"
+    fi
     
     local end_time=$(get_timestamp)
     echo ""
@@ -523,18 +532,24 @@ main() {
                 echo "kubectl rollout restart deployment search-server -n ${NAMESPACE}"
             fi
             echo ""
-            echo "# Restart sglang-qwen-judger deployment"
-            if [ -f "${QWEN_JUDGER_DEPLOYMENT}" ]; then
-                echo "kubectl delete -f \"${QWEN_JUDGER_DEPLOYMENT}\" --ignore-not-found=true -n ${NAMESPACE}"
-                echo "kubectl apply -f \"${QWEN_JUDGER_DEPLOYMENT}\" -n ${NAMESPACE}"
-            else
-                echo "kubectl rollout restart deployment sglang-qwen-judger -n ${NAMESPACE}"
+            # Only include sglang-qwen-judger deployment commands if using qwen-32B judge model
+            if [ "${JUDGE_MODEL_DIR}" = "qwen-32B" ]; then
+                echo "# Restart sglang-qwen-judger deployment"
+                if [ -f "${QWEN_JUDGER_DEPLOYMENT}" ]; then
+                    echo "kubectl delete -f \"${QWEN_JUDGER_DEPLOYMENT}\" --ignore-not-found=true -n ${NAMESPACE}"
+                    echo "kubectl apply -f \"${QWEN_JUDGER_DEPLOYMENT}\" -n ${NAMESPACE}"
+                else
+                    echo "kubectl rollout restart deployment sglang-qwen-judger -n ${NAMESPACE}"
+                fi
+                echo ""
             fi
-            echo ""
             echo "# Wait for deployments to be ready"
             echo "kubectl rollout status deployment sglang -n ${NAMESPACE} --timeout=600s"
             echo "kubectl rollout status deployment search-server -n ${NAMESPACE} --timeout=600s"
-            echo "kubectl rollout status deployment sglang-qwen-judger -n ${NAMESPACE} --timeout=600s"
+            # Only include sglang-qwen-judger rollout status if using qwen-32B judge model
+            if [ "${JUDGE_MODEL_DIR}" = "qwen-32B" ]; then
+                echo "kubectl rollout status deployment sglang-qwen-judger -n ${NAMESPACE} --timeout=600s"
+            fi
         elif ${run_all}; then
             local difficulties=("easy" "medium" "hard")
             local workflows=("search" "search_branch")
@@ -705,15 +720,21 @@ main() {
                 else
                     echo "kubectl rollout restart deployment search-server -n ${NAMESPACE}"
                 fi
-                if [ -f "${QWEN_JUDGER_DEPLOYMENT}" ]; then
-                    echo "kubectl delete -f \"${QWEN_JUDGER_DEPLOYMENT}\" --ignore-not-found=true -n ${NAMESPACE}"
-                    echo "kubectl apply -f \"${QWEN_JUDGER_DEPLOYMENT}\" -n ${NAMESPACE}"
-                else
-                    echo "kubectl rollout restart deployment sglang-qwen-judger -n ${NAMESPACE}"
+                # Only include sglang-qwen-judger deployment commands if using qwen-32B judge model
+                if [ "${JUDGE_MODEL_DIR}" = "qwen-32B" ]; then
+                    if [ -f "${QWEN_JUDGER_DEPLOYMENT}" ]; then
+                        echo "kubectl delete -f \"${QWEN_JUDGER_DEPLOYMENT}\" --ignore-not-found=true -n ${NAMESPACE}"
+                        echo "kubectl apply -f \"${QWEN_JUDGER_DEPLOYMENT}\" -n ${NAMESPACE}"
+                    else
+                        echo "kubectl rollout restart deployment sglang-qwen-judger -n ${NAMESPACE}"
+                    fi
                 fi
                 echo "kubectl rollout status deployment sglang -n ${NAMESPACE} --timeout=600s"
                 echo "kubectl rollout status deployment search-server -n ${NAMESPACE} --timeout=600s"
-                echo "kubectl rollout status deployment sglang-qwen-judger -n ${NAMESPACE} --timeout=600s"
+                # Only include sglang-qwen-judger rollout status if using qwen-32B judge model
+                if [ "${JUDGE_MODEL_DIR}" = "qwen-32B" ]; then
+                    echo "kubectl rollout status deployment sglang-qwen-judger -n ${NAMESPACE} --timeout=600s"
+                fi
                 echo ""
                 echo "# 2. Run evaluation"
                 echo "kubectl delete -f \"${job_file}\" --ignore-not-found=true -n ${NAMESPACE}"

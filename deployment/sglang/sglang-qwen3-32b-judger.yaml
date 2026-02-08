@@ -1,0 +1,142 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sglang-qwen-judger
+  namespace: liuyunxin
+  labels:
+    app: sglang-qwen-judger
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sglang-qwen-judger
+  template:
+    metadata:
+      labels:
+        app: sglang-qwen-judger
+    spec:
+      containers:
+      - name: sglang
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/lmsysorg/sglang:dev-pr-15153-linux-amd64-otel
+        command: ["bash", "-c"]
+        args:
+        - |
+          echo "Starting sglang server for Qwen3-32B judger..."
+          python3 -m sglang.launch_server \
+          --model-path Qwen/Qwen3-32B \
+          --host 0.0.0.0 \
+          --port 8080 \
+          --context-length 40960 \
+          --max-running-requests 64 \
+          --chunked-prefill-size 1024 \
+          --mem-fraction-static 0.9 \
+          --log-level info \
+          --enable-metrics \
+          --attention-backend triton \
+          --sampling-backend flashinfer \
+          --enable-cache-report \
+          --enable-dynamic-batch-tokenizer \
+          --schedule-policy fcfs 
+        ports:
+        - containerPort: 8080
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 120
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 120
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 120
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        env:
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        - name: HF_HOME
+          value: "/root/.cache/huggingface"
+        - name: http_proxy
+          value: "http://192.168.3.226:7890"
+        - name: https_proxy
+          value: "http://192.168.3.226:7890"
+        - name: HTTP_PROXY
+          value: "http://192.168.3.226:7890"
+        - name: HTTPS_PROXY
+          value: "http://192.168.3.226:7890"
+        - name: APT_PROXY
+          value: "http://192.168.3.241:3142"
+        - name: PIP_INDEX_URL
+          value: "http://192.168.12.70:9181/repository/pypi-proxy/simple/"
+        - name: PIP_TRUSTED_HOST
+          value: "192.168.12.70"
+        - name: HF_ENDPOINT
+          value: "https://hf-mirror.com"
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token-secret
+              key: HF_TOKEN
+        - name: NO_PROXY
+          value: "0.0.0.0,127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin,jaeger"
+        - name: no_proxy
+          value: "0.0.0.0,127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin,jaeger"
+        - name: OTEL_SERVICE_NAME
+          value: "sglang-qwen3-32b-judger"
+        - name: SGLANG_ENABLE_TORCH_INFERENCE_MODE
+          value: "true"
+        - name: SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN
+          value: "1"
+        - name: SGLANG_SKIP_P2P_CHECK
+          value: "false"
+        - name: SGLANG_CHUNKED_PREFIX_CACHE_THRESHOLD
+          value: "8192"
+        - name: SGLANG_DISABLE_REQUEST_LOGGING
+          value: "true"
+        - name: SGLANG_HEALTH_CHECK_TIMEOUT
+          value: "60"
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+            memory: 64Gi
+            cpu: "32"
+          requests:
+            nvidia.com/gpu: 1
+            memory: 64Gi
+            cpu: "32"
+        volumeMounts:
+        - name: gpfshome
+          mountPath: /root
+      volumes:
+      - name: gpfshome
+        persistentVolumeClaim:
+          claimName: pvc-gpfshome-liuyunxin
+      - name: nvidia-libs
+        hostPath:
+          path: /usr/lib/x86_64-linux-gnu
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sglang-qwen-judger
+  namespace: liuyunxin
+spec:
+  selector:
+    app: sglang-qwen-judger
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP

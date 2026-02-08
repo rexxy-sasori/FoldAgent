@@ -168,30 +168,44 @@ run_evaluation() {
     
     # Get the job name
     local label_selector="app=foldagent-eval-${workflow//_/-}-${difficulty}"
+    local append_version_suffix=true
     if [ -n "${JUDGE_MODEL_DIR}" ]; then
         # For judge model directories, use a more specific selector
         # Handle different naming conventions based on judge model directory
         if [ "${JUDGE_MODEL_DIR}" = "kimi-2-thinking" ]; then
             label_selector="app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking"
         elif [ "${JUDGE_MODEL_DIR}" = "gpt-5" ]; then
-            label_selector="app=foldagent-eval-${workflow//_/-}-${difficulty}"
+            label_selector="app=foldagent-eval-${workflow//_/-}-${difficulty}-gpt-5-v0-81"
+            append_version_suffix=false
+        elif [ "${JUDGE_MODEL_DIR}" = "gpt-4" ]; then
+            label_selector="app=foldagent-eval-${workflow//_/-}-${difficulty}-gpt-4-v0-81"
+            append_version_suffix=false
         else
             # Default to the basic selector
             label_selector="app=foldagent-eval-${workflow//_/-}-${difficulty}"
         fi
     fi
     
-    # Append version suffix if specified
-    if [ -n "${VERSION_SUFFIX}" ]; then
+    # Append version suffix if specified and not already included
+    if [ -n "${VERSION_SUFFIX}" ] && [ "${append_version_suffix}" = "true" ]; then
         label_selector="${label_selector}-${VERSION_SUFFIX}"
     fi
+    
+    echo "[$(get_timestamp)] Looking for job with label selector: ${label_selector}"
     local job_name=$(kubectl get jobs -l "${label_selector}" -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}')
     
+    if [ -z "${job_name}" ]; then
+        echo "[$(get_timestamp)] ERROR: No job found with label selector: ${label_selector}"
+        return 1
+    fi
+    
+    echo "[$(get_timestamp)] Found job: ${job_name}"
     echo "[$(get_timestamp)] Monitoring job progress..."
     echo "[$(get_timestamp)] Waiting for job to complete..."
 
     # Wait for pod to be ready before monitoring
     echo "[$(get_timestamp)] Waiting for pod to be ready..."
+    echo "[$(get_timestamp)] Looking for pod with job-name: ${job_name}"
     local pod_ready=false
     local pod_wait_timeout=600  # 10 minutes to wait for pod to be ready
     local pod_wait_elapsed=0
@@ -201,6 +215,7 @@ run_evaluation() {
         local pod_name=$(kubectl get pods -l job-name="${job_name}" -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
         
         if [ -n "${pod_name}" ]; then
+            echo "[$(get_timestamp)] Found pod: ${pod_name}"
             local pod_phase=$(kubectl get pod "${pod_name}" -n ${NAMESPACE} -o jsonpath='{.status.phase}' 2>/dev/null)
             
             if [ "${pod_phase}" = "Running" ]; then
@@ -220,6 +235,7 @@ run_evaluation() {
 
     if [ "${pod_ready}" = "false" ]; then
         echo "[$(get_timestamp)] WARNING: Pod did not become ready within ${pod_wait_timeout} seconds"
+        echo "[$(get_timestamp)] Was looking for pod with job-name: ${job_name}"
         echo "[$(get_timestamp)] Proceeding with job monitoring anyway..."
     fi
 
@@ -281,7 +297,15 @@ run_evaluation() {
     echo "Results are saved in the container's /root/results directory"
     
     # Get the pod name from the job
+    echo "[$(get_timestamp)] Getting pod name for job: ${job_name}"
     local pod_name=$(kubectl get pods -l job-name="${job_name}" -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    
+    if [ -z "${pod_name}" ]; then
+        echo "[$(get_timestamp)] ERROR: No pod found for job: ${job_name}"
+        return 1
+    fi
+    
+    echo "[$(get_timestamp)] Found pod: ${pod_name}"
     
     # Show final logs
     if [[ "${job_status}" != "Complete" ]]; then
@@ -537,6 +561,14 @@ main() {
                     echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
                     echo "kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE}"
                     echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-kimi-k2-thinking -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
+                elif [ -n "${JUDGE_MODEL_DIR}" ] && [ "${JUDGE_MODEL_DIR}" = "gpt-5" ]; then
+                    echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-gpt-5-v0-81 -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
+                    echo "kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-gpt-5-v0-81 -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE}"
+                    echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-gpt-5-v0-81 -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
+                elif [ -n "${JUDGE_MODEL_DIR}" ] && [ "${JUDGE_MODEL_DIR}" = "gpt-4" ]; then
+                    echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-gpt-4-v0-81 -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
+                    echo "kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-gpt-4-v0-81 -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE}"
+                    echo "kubectl logs \$(kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty}-gpt-4-v0-81 -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} --tail=50"
                 else
                     echo "kubectl wait --for=condition=complete job \$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') --timeout=36000s -n ${NAMESPACE}"
                     echo "kubectl get pods -l job-name=\$(kubectl get jobs -l app=foldagent-eval-${workflow//_/-}-${difficulty} -n ${NAMESPACE} -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE}"

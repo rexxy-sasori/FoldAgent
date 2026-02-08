@@ -1,0 +1,107 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: foldagent-eval-search-medium-gpt-4-v0-81
+  namespace: liuyunxin
+spec:
+  template:
+    metadata:
+      labels:
+        app: foldagent-eval-search-medium-gpt-4-v0-81
+    spec:
+      containers:
+      - name: foldagent-eval-search-medium-gpt-4
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.81-log-llmbackend
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+          name: metrics
+        command: ["bash", "-c"]
+        args:
+          - >
+            python3 scripts/eval_bc.py
+            --workflow search
+            --model_name ByteDance-Seed/Seed-OSS-36B-Instruct 
+            --local_search_url http://search-server.liuyunxin:8000 
+            --data_path /app/data/bc_test.parquet 
+            --output_dir /root/results 
+            --num_workers 32 
+            --prompt_length 16384 
+            --response_length 32768 
+            --max_turn 200 
+            --val_max_turn 200 
+            --max_session 10 
+            --val_max_session 10 
+            --difficulty medium
+        resources:
+          limits: 
+            memory: "64Gi"
+            cpu: "32"
+          requests:
+            memory: "64Gi"
+            cpu: "32"
+        env:
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: foldagent-eval-secrets
+              key: openai-api-key
+        - name: OPENAI_BASE_URL
+          value: "http://sglang.liuyunxin:8080/v1"
+        - name: OPENAI_MODEL
+          value: "ByteDance-Seed/Seed-OSS-36B-Instruct"
+        - name: OPENAI_URL
+          value: "http://sglang.liuyunxin:8080/v1/chat/completions"
+        - name: JUDGE_OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: foldagent-eval-secrets
+              key: research-group-api-key
+        - name: JUDGE_OPENAI_BASE_URL
+          value: "https://lonlie.plus7.plus/v1"
+        - name: JUDGE_OPENAI_URL
+          value: "https://lonlie.plus7.plus/v1/chat/completions"
+        - name: JUDGE_OPENAI_MODEL
+          value: "gpt-4.1"
+        - name: NO_PROXY
+          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+        - name: no_proxy
+          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+        - name: HF_ENDPOINT
+          value: "https://hf-mirror.com"
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token-secret
+              key: HF_TOKEN
+        - name: http_proxy
+          value: "http://192.168.3.226:7890"
+        - name: https_proxy
+          value: "http://192.168.3.226:7890"
+        - name: HTTP_PROXY
+          value: "http://192.168.3.226:7890"
+        - name: HTTPS_PROXY
+          value: "http://192.168.3.226:7890"
+        - name: APT_PROXY
+          value: "http://192.168.3.241:3142"
+        - name: PIP_INDEX_URL
+          value: "http://192.168.12.70:9181/repository/pypi-proxy/simple/"
+        - name: PIP_TRUSTED_HOST
+          value: "192.168.12.70"
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: HF_HOME
+          value: "/root/.cache/huggingface"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secrets
+              key: DATABASE_URL
+        volumeMounts:
+        - name: gpfshome
+          mountPath: /root
+      volumes:
+      - name: gpfshome
+        persistentVolumeClaim:
+          claimName: pvc-gpfshome-liuyunxin
+      restartPolicy: OnFailure

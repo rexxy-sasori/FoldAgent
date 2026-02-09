@@ -94,7 +94,7 @@ if [ "$USE_CACHE" = true ]; then
     CACHE_OPTION=""
 fi
 
-BUILD_COMMAND="docker buildx build --platform=linux/amd64 -t $IMAGE_NAME . $CACHE_OPTION"
+BUILD_COMMAND="docker buildx build --platform=linux/amd64 -t $IMAGE_NAME -f docker/Dockerfile . $CACHE_OPTION"
 
 # Execute the build command and capture exit status
 echo -e "${YELLOW}Running command:${NC} $BUILD_COMMAND\n"

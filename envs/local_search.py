@@ -465,7 +465,7 @@ def extract_fn_call(text):
         else:
             logger.debug(text)
     text = re.split(r'<\[[^\]]+\]>', text)[-1].strip()
-    matches = list(re.finditer(r'(?m)^[ \t]*<function=([^>]+)>\s*(.*?)\s*</function>',
+    matches = list(re.finditer(r'<function=([^>]+)>\s*(.*?)\s*</function>',
                                text, re.DOTALL))
     if not matches:
         return None

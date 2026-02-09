@@ -1,17 +1,17 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: foldagent-eval-search-easy-qwen-32b-v0-81
+  name: foldagent-eval-search-easy-qwen-32b-v1-03
   namespace: liuyunxin
 spec:
   template:
     metadata:
       labels:
-        app: foldagent-eval-search-easy-qwen-32b-v0-81
+        app: foldagent-eval-search-easy-qwen-32b-v1-03
     spec:
       containers:
       - name: foldagent-eval-search-easy-qwen-32b
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.81-log-llmbackend
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:1.03-llm-log-backend
         imagePullPolicy: Always
         ports:
         - containerPort: 8000

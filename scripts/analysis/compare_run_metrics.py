@@ -16,11 +16,47 @@ import csv
 import argparse
 import asyncio
 from typing import Dict, List, Any, Optional, Tuple
+import pandas as pd
 
 # Add project root to path for importing db_client
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from agents.db_client import get_event_db
+
+def load_difficulty_mapping(data_path: str = 'data/bc_test.parquet') -> Dict[str, str]:
+    """
+    Load difficulty mapping from parquet file.
+    
+    Args:
+        data_path: Path to the parquet file containing test data
+    
+    Returns:
+        Dict[str, str]: Mapping from instance_id to difficulty level
+    """
+    try:
+        df = pd.read_parquet(data_path)
+        difficulty_map = {}
+        
+        for _, row in df.iterrows():
+            instance_id = row['extra_info'].get('instance_id', 'unknown')
+            data_source = row.get('data_source', 'unknown')
+            
+            # Normalize difficulty names (handle typo: 'meduim' -> 'medium')
+            difficulty = 'unknown'
+            if 'easy' in str(data_source).lower():
+                difficulty = 'easy'
+            elif 'medium' in str(data_source).lower() or 'meduim' in str(data_source).lower():
+                difficulty = 'medium'
+            elif 'hard' in str(data_source).lower():
+                difficulty = 'hard'
+            
+            difficulty_map[instance_id] = difficulty
+        
+        print(f"Loaded difficulty mapping for {len(difficulty_map)} items from {data_path}")
+        return difficulty_map
+    except Exception as e:
+        print(f"Warning: Could not load difficulty mapping from {data_path}: {e}")
+        return {}
 
 async def read_database_url() -> str:
     """
@@ -57,17 +93,20 @@ async def validate_run_ids(db, run_id1: str, run_id2: str) -> Tuple[bool, bool]:
         print(f"Error validating run IDs: {e}")
         return False, False
 
-async def analyze_run(db, run_id: str) -> Dict[str, Any]:
+async def analyze_run(db, run_id: str, difficulty_map: Dict[str, str] = None) -> Dict[str, Any]:
     """
     Analyze a single run and calculate metrics by difficulty level and item.
     
     Args:
         db: Database client instance
         run_id: Run ID to analyze
+        difficulty_map: Optional mapping from instance_id to difficulty level
     
     Returns:
         Dict[str, Any]: Metrics organized by difficulty level
     """
+    if difficulty_map is None:
+        difficulty_map = {}
     try:
         events = await db.get_events_by_run_id(run_id)
         
@@ -84,14 +123,15 @@ async def analyze_run(db, run_id: str) -> Dict[str, Any]:
             # Extract item ID from request_id (first part before '_')
             item_id = request_id.split('_')[0] if '_' in request_id else 'unknown'
             
-            # Get difficulty from various sources or default to unknown
-            difficulty = 'unknown'
-            # Try to get difficulty from event data if present
-            if event_data.get('difficulty'):
-                difficulty = event_data.get('difficulty', 'unknown')
-            # Try to infer difficulty from ability if present
-            elif event_data.get('ability'):
-                difficulty = event_data.get('ability', 'unknown')
+            # Get difficulty from difficulty_map first, then fallback to event data
+            difficulty = difficulty_map.get(item_id, 'unknown')
+            if difficulty == 'unknown':
+                # Try to get difficulty from event data if present
+                if event_data.get('difficulty'):
+                    difficulty = event_data.get('difficulty', 'unknown')
+                # Try to infer difficulty from ability if present
+                elif event_data.get('ability'):
+                    difficulty = event_data.get('ability', 'unknown')
             
             if difficulty not in difficulty_metrics:
                 difficulty_metrics[difficulty] = {
@@ -256,7 +296,7 @@ async def analyze_run(db, run_id: str) -> Dict[str, Any]:
         return {}
 
 async def generate_output(metrics1: Dict[str, Any], metrics2: Dict[str, Any], 
-                          run_id1: str, run_id2: str, output_format: str):
+                          run_id1: str, run_id2: str, output_format: str, difficulty_map: Dict[str, str] = None):
     """
     Generate structured output in the specified format.
     
@@ -266,7 +306,10 @@ async def generate_output(metrics1: Dict[str, Any], metrics2: Dict[str, Any],
         run_id1: First run ID
         run_id2: Second run ID
         output_format: Output format (csv, json, or both)
+        difficulty_map: Optional mapping from instance_id to difficulty level
     """
+    if difficulty_map is None:
+        difficulty_map = {}
     # Get all unique difficulty levels, excluding '_item_metrics'
     all_difficulties = sorted(set([d for d in list(metrics1.keys()) + list(metrics2.keys()) if d != '_item_metrics']))
     
@@ -375,9 +418,9 @@ async def generate_output(metrics1: Dict[str, Any], metrics2: Dict[str, Any],
     
     # Print per-item analysis
     print("\nPer-Item Analysis:")
-    print("=" * 120)
-    print(f"{'Item ID':<10} {'Metric':<25} {'Run 1':<20} {'Run 2':<20} {'Delta'}")
-    print("-" * 120)
+    print("=" * 140)
+    print(f"{'Item ID':<10} {'Difficulty':<10} {'Metric':<25} {'Run 1':<20} {'Run 2':<20} {'Delta'}")
+    print("-" * 140)
     
     # Get all unique item IDs
     all_item_ids = sorted(set(list(item_metrics1.keys()) + list(item_metrics2.keys())), key=lambda x: int(x) if x.isdigit() else x)
@@ -386,6 +429,9 @@ async def generate_output(metrics1: Dict[str, Any], metrics2: Dict[str, Any],
         # Skip unknown items
         if item_id == 'unknown':
             continue
+        
+        # Get difficulty for this item
+        difficulty = difficulty_map.get(item_id, 'unknown')
         
         # Get item metrics
         item1 = item_metrics1.get(item_id, {})
@@ -412,11 +458,11 @@ async def generate_output(metrics1: Dict[str, Any], metrics2: Dict[str, Any],
         p2, c2, cache2, reward2, dur2, avg_dur2, llm2 = calc_item_metrics(item2)
         
         # Print item metrics
-        print(f"{item_id:<10} | {'Avg LLM Duration (s)':<25} | {avg_dur1:>19.3f} | {avg_dur2:>19.3f} | {avg_dur2 - avg_dur1:>+7.3f}")
-        print(f"{'':<10} | {'Final Reward Score':<25} | {reward1:>19.3f} | {reward2:>19.3f} | {'WIN' if reward2 > reward1 else 'LOSS' if reward2 < reward1 else 'SAME'}")
-        print(f"{'':<10} | {'Total Duration / Cache%':<25} | {dur1:>10.3f}s / {cache1:>6.1f}% | {dur2:>10.3f}s / {cache2:>6.1f}% | {cache2 - cache1:>+7.1f}%")
-        print(f"{'':<10} | {'LLM Responses':<25} | {llm1:>19} | {llm2:>19} | {llm2 - llm1:>+7}")
-        print("-" * 120)
+        print(f"{item_id:<10} {difficulty:<10} | {'Avg LLM Duration (s)':<25} | {avg_dur1:>19.3f} | {avg_dur2:>19.3f} | {avg_dur2 - avg_dur1:>+7.3f}")
+        print(f"{'':<10} {'':<10} | {'Final Reward Score':<25} | {reward1:>19.3f} | {reward2:>19.3f} | {'WIN' if reward2 > reward1 else 'LOSS' if reward2 < reward1 else 'SAME'}")
+        print(f"{'':<10} {'':<10} | {'Total Duration / Cache%':<25} | {dur1:>10.3f}s / {cache1:>6.1f}% | {dur2:>10.3f}s / {cache2:>6.1f}% | {cache2 - cache1:>+7.1f}%")
+        print(f"{'':<10} {'':<10} | {'LLM Responses':<25} | {llm1:>19} | {llm2:>19} | {llm2 - llm1:>+7}")
+        print("-" * 140)
 
 async def main():
     """
@@ -427,10 +473,15 @@ async def main():
     parser.add_argument('run_id2', help='Second run ID for comparison')
     parser.add_argument('--format', choices=['csv', 'json', 'both'], default='both',
                         help='Output format (default: both)')
+    parser.add_argument('--data_path', default='data/bc_test.parquet',
+                        help='Path to test data parquet file (default: data/bc_test.parquet)')
     
     args = parser.parse_args()
     
     try:
+        # Load difficulty mapping from parquet file
+        difficulty_map = load_difficulty_mapping(args.data_path)
+        
         # Read database URL from environment variable
         db_url = await read_database_url()
         
@@ -451,15 +502,15 @@ async def main():
         
         print("Run IDs validated successfully!")
         
-        # Analyze both runs
+        # Analyze both runs with difficulty mapping
         print(f"Analyzing run {args.run_id1}...")
-        metrics1 = await analyze_run(db, args.run_id1)
+        metrics1 = await analyze_run(db, args.run_id1, difficulty_map)
         
         print(f"Analyzing run {args.run_id2}...")
-        metrics2 = await analyze_run(db, args.run_id2)
+        metrics2 = await analyze_run(db, args.run_id2, difficulty_map)
         
         # Generate output
-        await generate_output(metrics1, metrics2, args.run_id1, args.run_id2, args.format)
+        await generate_output(metrics1, metrics2, args.run_id1, args.run_id2, args.format, difficulty_map)
         
     except ValueError as e:
         print(f"Error: {e}")

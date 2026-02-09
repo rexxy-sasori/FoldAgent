@@ -1,40 +1,38 @@
-# Use specified base image from harbor registry
+# Use your specific base image
 FROM harbor.xa.xshixun.com:7443/hanfeigeng/vllm/vllm-openai:v0.13.0-linux-amd64
 
-# Install git for repository cloning
-RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+# Combine system installs and cleanup to keep the layer small
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    && rm -rf /var/lib/apt/lists/*
 
-# Set environment variables
-ENV PYTHONUNBUFFERED=1
+# Set env vars to prevent cache bloat and ensure logs flush immediately
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
 
-# Set working directory
 WORKDIR /app
 
-# Copy only the verl package directory for installation
-COPY external/verl/ ./external/verl/
+# Install heavy, stable dependencies first. 
+# This ensures that changing your local code doesn't trigger a 10-minute re-download.
+RUN pip3 install --no-cache-dir \
+    fastapi uvicorn transformers numpy pandas tqdm omegaconf \
+    torch huggingface_hub==0.36.0 sqlalchemy asyncpg \
+    psycopg2-binary aiosqlite datasets gitpython filelock
 
-# Install verl package without editable mode
-RUN pip3 install ./external/verl
-
-# Install additional Python dependencies
-RUN pip3 install fastapi uvicorn transformers numpy pandas tqdm omegaconf torch huggingface_hub==0.36.0 sqlalchemy asyncpg psycopg2-binary aiosqlite datasets gitpython filelock
+# Flash-attn is kept separate as it often requires specific build isolation settings
 RUN pip3 install flash-attn --no-build-isolation 
 
-# Clean up unnecessary files after installation
-# RUN rm -rf /app/external/verl \
-#     && pip3 cache purge \
-#     && rm -rf /root/.cache/pip \
-#     && apt-get clean \
-#     && rm -rf /var/lib/apt/lists/*
+# Install your local package, then immediately remove the source to save space
+COPY external/verl/ ./external/verl/
+RUN pip3 install ./external/verl && rm -rf ./external/verl
 
-# Copy only the necessary application code
+# Copy application code last (these change most frequently)
 COPY envs/ ./envs/
 COPY agents/ ./agents/
 COPY scripts/ ./scripts/
 COPY data/ ./data/
 
-# Expose ports for services
 EXPOSE 8000
 
-# Default command to start search server
 CMD ["python3", "envs/search_server.py"]

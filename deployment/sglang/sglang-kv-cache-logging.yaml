@@ -45,14 +45,10 @@ spec:
           value: "true"
 
       - name: sglang
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/lmsysorg/sglang:kv-cache-logging-dev-0.1
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/lmsysorg/sglang:kv-cache-logging-dev-otel-0.3
         command: ["bash", "-c"]
         args:
         - |
-          # Download model using HF mirror
-          echo "Downloading model using HF mirror..."
-          HF_ENDPOINT=https://hf-mirror.com huggingface-cli download --resume-download --local-dir-use-symlinks False Qwen/Qwen3-32B
-          
           # Start sglang server
           echo "Starting sglang server..."
           python3 -m sglang.launch_server \

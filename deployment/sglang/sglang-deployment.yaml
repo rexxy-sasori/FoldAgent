@@ -45,7 +45,7 @@ spec:
           value: "true"
 
       - name: sglang
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/lmsysorg/sglang:kv-cache-logging-dev-otel-0.3
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/lmsysorg/sglang:kv-cache-logging-dev-otel-0.7
         command: ["bash", "-c"]
         args:
         - |

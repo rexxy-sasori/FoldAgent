@@ -18,6 +18,9 @@ from .prompts import BRANCH_MESSAGE_SEARCH, BRANCH_MESSAGE, SUMMARY_PROMPT_CODE,
 from .verifier import judge_scope
 from .db_client import log_event
 
+# Check if event logging to database is enabled
+LOG_EVENT_TO_DB = os.environ.get('LOG_EVENT_TO_DB', 'false').lower() == 'true'
+
 logger = logging.getLogger(__name__)
 
 
@@ -234,15 +237,16 @@ async def process_item(
                 logger.info(f'[BRANCH] {description} | Agent: {agent_name} | Context length: {context_length} | Branch count: {branch_count + 1}')
                 logger.debug('[BRANCH] %s %d', description, len(agent['main'].context()))
                 # Log branch event to database
-                await log_event(
-                    event_type='branch',
-                    request_id=request_id,
-                    run_id=run_id,
-                    description=description,
-                    agent_name=agent_name,
-                    context_length=context_length,
-                    branch_count=branch_count + 1
-                )
+                if LOG_EVENT_TO_DB:
+                    await log_event(
+                        event_type='branch',
+                        request_id=request_id,
+                        run_id=run_id,
+                        description=description,
+                        agent_name=agent_name,
+                        context_length=context_length,
+                        branch_count=branch_count + 1
+                    )
                 # print(message_to_branch)
                 branches.append(agent_name)
                 branch_tasks[agent_name] = message_to_branch
@@ -285,16 +289,17 @@ async def process_item(
                     logger.info(f'[RETURN] {description} | Agent: {agent_name} | Context length: {len(agent[agent_name].context())}')
                     logger.debug(f'[RETURN] Return message: {branch_message}' if branch_message else f'[RETURN] Return without message')
                     # Log return event to database
-                    await log_event(
-                        event_type='return',
-                        request_id=request_id,
-                        run_id=run_id,
-                        description=description,
-                        agent_name=agent_name,
-                        context_length=len(agent[agent_name].context()),
-                        branch_message=branch_message,
-                        return_type='explicit'
-                    )
+                    if LOG_EVENT_TO_DB:
+                        await log_event(
+                            event_type='return',
+                            request_id=request_id,
+                            run_id=run_id,
+                            description=description,
+                            agent_name=agent_name,
+                            context_length=len(agent[agent_name].context()),
+                            branch_message=branch_message,
+                            return_type='explicit'
+                        )
                 elif fn_call is not None and fn_call['function'] == 'finish':
                     if 'message' in fn_call['arguments']:
                         branch_message = fn_call['arguments'].get('message', 'Empty message')
@@ -303,32 +308,34 @@ async def process_item(
                     logger.info(f'[RETURN] {description} | Agent: {agent_name} | Context length: {len(agent[agent_name].context())}')
                     logger.debug(f'[RETURN] Return message (via finish): {branch_message}' if branch_message else f'[RETURN] Return without message (via finish)')
                     # Log return event to database
-                    await log_event(
-                        event_type='return',
-                        request_id=request_id,
-                        run_id=run_id,
-                        description=description,
-                        agent_name=agent_name,
-                        context_length=len(agent[agent_name].context()),
-                        branch_message=branch_message,
-                        return_type='finish'
-                    )
+                    if LOG_EVENT_TO_DB:
+                        await log_event(
+                            event_type='return',
+                            request_id=request_id,
+                            run_id=run_id,
+                            description=description,
+                            agent_name=agent_name,
+                            context_length=len(agent[agent_name].context()),
+                            branch_message=branch_message,
+                            return_type='finish'
+                        )
                 if branch_message is None:
                     branch_message = f'Branch has finished its task. The last message was:\n\n{clean_response(last_response)}'
                     # Enhanced logging for implicit return (no explicit return/finish call)
                     logger.info(f'[RETURN] {description} | Agent: {agent_name} | Context length: {len(agent[agent_name].context())}')
                     logger.debug(f'[RETURN] Implicit return without explicit function call')
                     # Log return event to database
-                    await log_event(
-                        event_type='return',
-                        request_id=request_id,
-                        run_id=run_id,
-                        description=description,
-                        agent_name=agent_name,
-                        context_length=len(agent[agent_name].context()),
-                        branch_message=branch_message,
-                        return_type='implicit'
-                    )
+                    if LOG_EVENT_TO_DB:
+                        await log_event(
+                            event_type='return',
+                            request_id=request_id,
+                            run_id=run_id,
+                            description=description,
+                            agent_name=agent_name,
+                            context_length=len(agent[agent_name].context()),
+                            branch_message=branch_message,
+                            return_type='implicit'
+                        )
                 
                 # Extract and add all tool calls from branch message history to global registry
                 for msg in agent[agent_name].messages():
@@ -350,15 +357,16 @@ async def process_item(
                 # Check for redundant tool execution
                 if tool_signature in global_execution_registry:
                     logger.warning(f'[REDUNDANT_EXECUTION] {request_id} Main Agent re-executing redundant tool: {tool_signature}')
-                    await log_event(
-                        event_type='REDUNDANT_EXECUTION',
-                        request_id=request_id,
-                        run_id=run_id,
-                        tool_signature=tool_signature,
-                        iteration=iteration,
-                        agent_type='main',
-                        timestamp=time.time()
-                    )
+                    if LOG_EVENT_TO_DB:
+                        await log_event(
+                            event_type='REDUNDANT_EXECUTION',
+                            request_id=request_id,
+                            run_id=run_id,
+                            tool_signature=tool_signature,
+                            iteration=iteration,
+                            agent_type='main',
+                            timestamp=time.time()
+                        )
                     redundant_calls_count += 1
                 else:
                     global_execution_registry.add(tool_signature)
@@ -386,15 +394,16 @@ async def process_item(
     env.stats['inference_time'] = inference_time
 
     # Log inference complete event to database
-    await log_event(
-        event_type='inference_complete',
-        request_id=request_id,
-        run_id=run_id,
-        inference_time=inference_time,
-        session_time=env.stats['session_time'],
-        traj_num=len(agent),
-        main_turn=len(agent['main'].messages())
-    )
+    if LOG_EVENT_TO_DB:
+        await log_event(
+            event_type='inference_complete',
+            request_id=request_id,
+            run_id=run_id,
+            inference_time=inference_time,
+            session_time=env.stats['session_time'],
+            traj_num=len(agent),
+            main_turn=len(agent['main'].messages())
+        )
 
     logger.info('[TASK] Task Finish, Start Reward')
     try:
@@ -434,15 +443,16 @@ async def process_item(
             # Get judge model if available
             judge_model = os.getenv("JUDGE_OPENAI_MODEL", "unknown")
             
-            await log_event(
-                event_type='reward_evaluation_complete',
-                request_id=request_id,
-                run_id=run_id,
-                question=question,
-                reward_score=reward,
-                judge_openai_model=judge_model,
-                difficulty=difficulty
-            )
+            if LOG_EVENT_TO_DB:
+                await log_event(
+                    event_type='reward_evaluation_complete',
+                    request_id=request_id,
+                    run_id=run_id,
+                    question=question,
+                    reward_score=reward,
+                    judge_openai_model=judge_model,
+                    difficulty=difficulty
+                )
         except Exception as e:
             logger.error(f"[Error] Logging reward evaluation: {e}")
     except Exception as e:
@@ -468,15 +478,16 @@ async def process_item(
     if information_stalls:
         stalls_after_folds = sum(1 for stall in information_stalls if stall['has_folded_info'])
         logger.info(f'[STALL_ANALYSIS] {request_id} Total stalls: {len(information_stalls)}, Stalls after folds: {stalls_after_folds}')
-        await log_event(
-            event_type='stall_analysis',
-            request_id=request_id,
-            run_id=run_id,
-            total_stalls=len(information_stalls),
-            stalls_after_folds=stalls_after_folds,
-            branch_return_count=len(branch_returns),
-            stalls=information_stalls
-        )
+        if LOG_EVENT_TO_DB:
+            await log_event(
+                event_type='stall_analysis',
+                request_id=request_id,
+                run_id=run_id,
+                total_stalls=len(information_stalls),
+                stalls_after_folds=stalls_after_folds,
+                branch_return_count=len(branch_returns),
+                stalls=information_stalls
+            )
     
     # Print redundant execution summary
     logger.info(f'[REDUNDANT_EXECUTION_SUMMARY] {request_id} Total Redundant Calls: {redundant_calls_count} out of {total_calls_count + redundant_calls_count} total calls')

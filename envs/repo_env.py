@@ -13,6 +13,9 @@ import numpy as np
 import requests
 import torch
 
+# Check if event logging to database is enabled
+LOG_EVENT_TO_DB = os.environ.get('LOG_EVENT_TO_DB', 'false').lower() == 'true'
+
 logger = logging.getLogger(__name__)
 
 
@@ -154,15 +157,16 @@ class GymEnv:
             if hasattr(self, 'instance_info') and self.instance_info:
                 question = self.instance_info.get('problem_statement', 'unknown')
             
-            await log_event(
-                event_type='reward_evaluation_complete',
-                request_id=request_id,
-                run_id=run_id,
-                question=question,
-                reward_score=reward,
-                judge_openai_model=judge_model,
-                difficulty=difficulty
-            )
+            if LOG_EVENT_TO_DB:
+                await log_event(
+                    event_type='reward_evaluation_complete',
+                    request_id=request_id,
+                    run_id=run_id,
+                    question=question,
+                    reward_score=reward,
+                    judge_openai_model=judge_model,
+                    difficulty=difficulty
+                )
         except Exception as e:
             import logging
             logging.error(f"[Error] Logging reward evaluation: {e}")

@@ -16,6 +16,9 @@ from .utils import CallLLM, Agent, select_env, truncate_text, is_weird, TaskCont
 from .prompts import create_chat
 from .db_client import log_event
 
+# Check if event logging to database is enabled
+LOG_EVENT_TO_DB = os.environ.get('LOG_EVENT_TO_DB', 'false').lower() == 'true'
+
 logger = logging.getLogger(__name__)
 
 
@@ -145,15 +148,16 @@ async def process_item(
             # Get judge model if available
             judge_model = os.getenv("JUDGE_OPENAI_MODEL", "unknown")
             
-            await log_event(
-                event_type='reward_evaluation_complete',
-                request_id=request_id,
-                run_id=run_id,
-                question=question,
-                reward_score=reward,
-                judge_openai_model=judge_model,
-                difficulty=difficulty
-            )
+            if LOG_EVENT_TO_DB:
+                await log_event(
+                    event_type='reward_evaluation_complete',
+                    request_id=request_id,
+                    run_id=run_id,
+                    question=question,
+                    reward_score=reward,
+                    judge_openai_model=judge_model,
+                    difficulty=difficulty
+                )
         except Exception as e:
             logger.error(f"[REQUEST {request_id}] [Error] Logging reward evaluation: {e}")
     except Exception as e:

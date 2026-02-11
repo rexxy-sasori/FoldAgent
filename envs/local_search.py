@@ -11,6 +11,9 @@ import asyncio, json, httpx
 import logging
 from typing import Optional
 
+# Check if event logging to database is enabled
+LOG_EVENT_TO_DB = os.environ.get('LOG_EVENT_TO_DB', 'false').lower() == 'true'
+
 # call this once early (after your logging.basicConfig if you use it)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -373,7 +376,7 @@ class AsyncSearchClient:
             duration = end_time - start_time
             
             # Log search event to database if request_id is available
-            if self.request_id:
+            if self.request_id and LOG_EVENT_TO_DB:
                 from agents.db_client import log_event
                 await log_event(
                     event_type='search_server',
@@ -393,7 +396,7 @@ class AsyncSearchClient:
             duration = end_time - start_time
             
             # Log search error to database if request_id is available
-            if self.request_id:
+            if self.request_id and LOG_EVENT_TO_DB:
                 from agents.db_client import log_event
                 await log_event(
                     event_type='search_server_error',

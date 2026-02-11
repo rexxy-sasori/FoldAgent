@@ -18,6 +18,9 @@ from verl import DataProto
 from envs.local_search import LocalSearch
 from .db_client import log_event, global_event_db
 
+# Check if event logging to database is enabled
+LOG_EVENT_TO_DB = os.environ.get('LOG_EVENT_TO_DB', 'false').lower() == 'true'
+
 logger = logging.getLogger(__name__)
 
 
@@ -244,18 +247,19 @@ class CallLLM:  # Call policy LLM in RL env
                 start_time = time.time()
                 
                 # Log LLM request to database
-                request_id = self.meta_info.get('request_id', 'unknown')
-                run_id = self.meta_info.get('run_id', 'unknown')
-                await log_event(
-                    event_type='llm_request',
-                    request_id=request_id,
-                    run_id=run_id,
-                    source_agent_type=source_agent_type,
-                    agent_type=role_agent_type,
-                    model="rollout",
-                    timestamp=start_time,
-                    branch_context=agent_name  # Now shows specific agent name
-                )
+                if LOG_EVENT_TO_DB:
+                    request_id = self.meta_info.get('request_id', 'unknown')
+                    run_id = self.meta_info.get('run_id', 'unknown')
+                    await log_event(
+                        event_type='llm_request',
+                        request_id=request_id,
+                        run_id=run_id,
+                        source_agent_type=source_agent_type,
+                        agent_type=role_agent_type,
+                        model="rollout",
+                        timestamp=start_time,
+                        branch_context=agent_name  # Now shows specific agent name
+                    )
                 
                 async with session.post(url=self.url,
                                         headers={"Authorization": "Bearer token-abc123"},
@@ -313,24 +317,25 @@ class CallLLM:  # Call policy LLM in RL env
                     'generation_kwargs': generation_kwargs
                 }
                 
-                await log_event(
-                event_type='llm_response',
-                request_id=request_id,
-                run_id=run_id,
-                source_agent_type=source_agent_type,
-                agent_type=role_agent_type,
-                model="rollout",
-                start_time=start_time,
-                end_time=end_time,
-                duration=duration,
-                prompt_tokens=usage.get('prompt_tokens', 0),
-                completion_tokens=usage.get('completion_tokens', 0),
-                cached_tokens=cached_tokens,
-                total_tokens=usage.get('total_tokens', 0),
-                branch_context=agent_name,  # Now shows specific agent name
-                response_log_probs=response_log_probs,  # Log logprobs for variance analysis
-                context=context_summary  # Log current context
-            )
+                if LOG_EVENT_TO_DB:
+                    await log_event(
+                        event_type='llm_response',
+                        request_id=request_id,
+                        run_id=run_id,
+                        source_agent_type=source_agent_type,
+                        agent_type=role_agent_type,
+                        model="rollout",
+                        start_time=start_time,
+                        end_time=end_time,
+                        duration=duration,
+                        prompt_tokens=usage.get('prompt_tokens', 0),
+                        completion_tokens=usage.get('completion_tokens', 0),
+                        cached_tokens=cached_tokens,
+                        total_tokens=usage.get('total_tokens', 0),
+                        branch_context=agent_name,  # Now shows specific agent name
+                        response_log_probs=response_log_probs,  # Log logprobs for variance analysis
+                        context=context_summary  # Log current context
+                    )
                 await session.close()
                 return completion
 

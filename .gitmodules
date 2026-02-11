@@ -1,6 +1,6 @@
 [submodule "external/verl"]
 	path = external/verl
-	url = https://github.com/sunnweiwei/verl.git
+	url = https://github.com/rexxy-sasori/verl.git
 [submodule "external/sglang"]
 	path = external/sglang
 	url = https://github.com/rexxy-sasori/sglang.git

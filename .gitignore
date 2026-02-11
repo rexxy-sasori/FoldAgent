@@ -7,3 +7,4 @@ __pycache__
 .*_cache
 *.csv
 *.db
+deployment/eval-secrets.yaml

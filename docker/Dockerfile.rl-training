@@ -1,0 +1,23 @@
+# Dockerfile for FoldAgent RL Training
+ARG BASE_IMAGE=harbor.xa.xshixun.com:7443/hanfeigeng/verl:0.10
+FROM ${BASE_IMAGE}
+
+# Set working directory
+WORKDIR /app
+
+# Job 1: Install VERL from local source
+COPY external/verl/ /app/external/verl/
+RUN pip uninstall -y verl || true && \
+    pip install --no-cache-dir -e /app/external/verl/ 
+
+# Job 2: Copy FoldAgent directories
+COPY agents/ /app/agents/
+COPY data/ /app/data/
+COPY envs/ /app/envs/
+COPY scripts/ /app/scripts/
+
+# Set PYTHONPATH
+ENV PYTHONPATH=/app:/app/external/verl
+
+# Default command
+CMD ["bash"]

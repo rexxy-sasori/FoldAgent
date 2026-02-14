@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wandb-server
+  namespace: liuyunxin
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: wandb-server
+  template:
+    metadata:
+      labels:
+        app: wandb-server
+    spec:
+      volumes:
+        - name: rl-training-storage
+          persistentVolumeClaim:
+            claimName: pvc-gpfshome-liuyunxin
+      containers:
+        - name: wandb-server
+          image: harbor.xa.xshixun.com:7443/hanfeigeng/wandb/local:latest
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: rl-training-storage
+              mountPath: /root/rl-training
+          env:
+            - name: WANDB_DIR
+              value: /root/rl-training/wandb
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wandb-server
+  namespace: liuyunxin
+spec:
+  selector:
+    app: wandb-server
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: wandb-ingress
+  namespace: liuyunxin
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: wandb-liuyunxin.xa.xshixun.cn
+      http:
+        paths:
+          - path: /(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: wandb-server
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - wandb-liuyunxin.xa.xshixun.cn
+      secretName: wandb-liuyunxin.xa.xshixun.cn-tls

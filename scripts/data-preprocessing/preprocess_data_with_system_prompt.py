@@ -19,7 +19,7 @@ def load_system_prompt(template_path):
     return system_prompt
 
 
-def preprocess_parquet(input_path, output_path, system_prompt):
+def preprocess_parquet(input_path, output_path, system_prompt, replace=False):
     """
     Preprocess parquet file to inject system prompt.
     
@@ -27,15 +27,18 @@ def preprocess_parquet(input_path, output_path, system_prompt):
         input_path: Path to input parquet file
         output_path: Path to output parquet file
         system_prompt: System prompt string to inject
+        replace: If True, replace existing system prompts; if False, skip them
     """
     print(f"Loading data from {input_path}...")
     df = pd.read_parquet(input_path)
     print(f"Loaded {len(df)} examples")
     
     modified_count = 0
+    skipped_count = 0
     
     for idx, row in df.iterrows():
-        # Get existing messages or create new structure
+        messages = None
+        
         if 'messages' in row and row['messages'] is not None:
             messages = row['messages']
             if isinstance(messages, str):
@@ -46,30 +49,51 @@ def preprocess_parquet(input_path, output_path, system_prompt):
                 messages = json.loads(raw_prompt)
             else:
                 messages = raw_prompt
+        elif 'prompt' in row and row['prompt'] is not None:
+            prompt_data = row['prompt']
+            if isinstance(prompt_data, str):
+                messages = json.loads(prompt_data)
+            elif hasattr(prompt_data, 'tolist'):
+                messages = prompt_data.tolist()
+            else:
+                messages = prompt_data
         else:
             print(f"Warning: No messages found in row {idx}, skipping...")
+            skipped_count += 1
             continue
         
-        # Check if first message is already system
+        if not messages or not isinstance(messages, list):
+            print(f"Warning: Invalid messages format in row {idx}, skipping...")
+            skipped_count += 1
+            continue
+        
         if messages and messages[0].get('role') == 'system':
-            print(f"Row {idx}: System prompt already exists, skipping...")
-            continue
+            if replace:
+                messages[0]['content'] = system_prompt
+                print(f"Row {idx}: Replaced existing system prompt")
+            else:
+                print(f"Row {idx}: System prompt already exists, skipping...")
+                skipped_count += 1
+                continue
+        else:
+            system_message = {
+                'role': 'system',
+                'content': system_prompt
+            }
+            messages = [system_message] + messages
+            print(f"Row {idx}: Added new system prompt")
         
-        # Prepend system message
-        system_message = {
-            'role': 'system',
-            'content': system_prompt
-        }
-        
-        # Update messages
         if 'messages' in row:
-            df.at[idx, 'messages'] = [system_message] + messages
+            df.at[idx, 'messages'] = messages
         elif 'raw_prompt' in row:
-            df.at[idx, 'raw_prompt'] = json.dumps([system_message] + messages)
+            df.at[idx, 'raw_prompt'] = json.dumps(messages)
+        elif 'prompt' in row:
+            df.at[idx, 'prompt'] = messages
         
         modified_count += 1
     
-    print(f"Modified {modified_count} examples")
+    print(f"\nModified {modified_count} examples")
+    print(f"Skipped {skipped_count} examples")
     print(f"Saving to {output_path}...")
     df.to_parquet(output_path, index=False)
     print(f"Saved successfully!")
@@ -97,6 +121,11 @@ def main():
         default='/app/envs/verl_tool_adaptor/system_prompt_template.txt',
         help='System prompt template file path'
     )
+    parser.add_argument(
+        '--replace',
+        action='store_true',
+        help='Replace existing system prompts instead of skipping them'
+    )
     
     args = parser.parse_args()
     
@@ -106,6 +135,7 @@ def main():
     print(f"Input: {args.input}")
     print(f"Output: {args.output}")
     print(f"System Prompt: {args.system_prompt}")
+    print(f"Replace existing: {args.replace}")
     print()
     
     # Load system prompt
@@ -116,7 +146,7 @@ def main():
     print()
     
     # Preprocess data
-    preprocess_parquet(args.input, args.output, system_prompt)
+    preprocess_parquet(args.input, args.output, system_prompt, replace=args.replace)
     
     print()
     print("=" * 60)

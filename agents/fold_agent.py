@@ -52,20 +52,14 @@ def extract_summary(text: str) -> str:
 def clean_response(response):
     if response is None:
         return None
-    # 1. Handle explicit return tool calls first
-    if '<function=return>' in response:
-        result = response.split('<function=return>')[-1]
-        # Strip any closing </function> tag
-        if '</function>' in result:
-            result = result.split('</function>')[0]
-        return result.strip()
     
-    # 2. Robustly strip reasoning tags (like <seed:think> or <[thought]>)
+    # 1. Robustly strip reasoning tags (like <seed:think> or <[thought]>)
     # This regex looks for any tag that ends with 'think' or 'thought'
     response = re.sub(r'<(seed:)?think>.*?</(seed:)?think>', '', response, flags=re.DOTALL)
-    response = re.sub(r'<\[[^\]]*thought[^\]]*\]>.*?</\[[^\]]*thought[^\]]*\]>', '', response, flags=re.DOTALL)
+    response = re.sub(r'<\[[^\]]*thought[^\]]*\]>', '', response, flags=re.DOTALL)
+    response = re.sub(r'</\[[^\]]*thought[^\]]*\]>', '', response, flags=re.DOTALL)
     
-    # 3. Fallback: If tags are unclosed or messy, find the first <function=
+    # 2. Fallback: If tags are unclosed or messy, find the first <function=
     if '<function=' in response:
         return response[response.find('<function='):]
         

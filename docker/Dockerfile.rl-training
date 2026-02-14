@@ -8,7 +8,8 @@ WORKDIR /app
 # Job 1: Install VERL from local source
 COPY external/verl/ /app/external/verl/
 RUN pip uninstall -y verl || true && \
-    pip install --no-cache-dir -e /app/external/verl/ 
+    pip install --no-cache-dir -e /app/external/verl/  && \
+    pip install --no-cache-dir transformers==4.57.1
 
 # Job 2: Copy FoldAgent directories
 COPY agents/ /app/agents/

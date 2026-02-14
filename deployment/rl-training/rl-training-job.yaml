@@ -24,8 +24,7 @@ spec:
             sizeLimit: 16Gi
       containers:
         - name: rl-training
-          image: harbor.xa.xshixun.com:7443/hanfeigeng/agent-rl-training:app-verl0.5-transformers4.55.4-vllm0.10.0-mcore0.13.0-te2.2-v0.8
-          imagePullPolicy: Always
+          image: harbor.xa.xshixun.com:7443/hanfeigeng/agent-rl-training:app-verl0.5-transformers4.55.4-sglang0.4.10.post2-mcore0.13.0-te2.2-v0.1
           command: ["bash", "-c"]
           args:
             - sleep infinity
@@ -54,7 +53,7 @@ spec:
                   name: wandb-secret
                   key: api-key
             - name: WANDB_BASE_URL
-              value: "http://wandb-server:80"
+              value: "http://wandb-server.liuyunxin:80"
             - name: HF_HOME
               value: "/root/.cache/huggingface/hub"
             - name: TRANSFORMERS_CACHE

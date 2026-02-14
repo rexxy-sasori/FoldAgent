@@ -79,52 +79,36 @@ class ReactAgentLoop(AgentLoopBase):
         """
         batch = data_proto.batch
         
-        # Extract prompt and response from DataProto
-        # DataProto has: input_ids, attention_mask, rollout_behavior_log_probs, etc.
-        # We need to split into prompt_ids and response_ids
-        
         prompt_length = self.config.actor_rollout_ref.rollout.prompt_length
         response_length = self.config.actor_rollout_ref.rollout.response_length
         
-        # Extract prompt tokens (first prompt_length tokens)
-        input_ids = batch['input_ids'][0]  # [total_length]
-        attention_mask = batch['attention_mask'][0]  # [total_length]
+        input_ids = batch['input_ids'][0]
+        attention_mask = batch['attention_mask'][0]
         
-        # Find where prompt ends and response begins
-        # Use attention_mask to find valid tokens
         valid_indices = torch.where(attention_mask == 1)[0]
         
-        # Assuming prompt is first prompt_length valid tokens
-        # This is a simplification - adjust based on your actual data structure
         prompt_ids = input_ids[:prompt_length].tolist()
         response_ids = input_ids[prompt_length:prompt_length + response_length].tolist()
         
-        # Create response mask (1 for LLM tokens, 0 for tool responses)
-        # For react agent, all response tokens are LLM-generated
         response_mask = [1] * len(response_ids)
         
-        # Extract log probabilities if available
         response_logprobs = None
         if 'rollout_behavior_log_probs' in batch:
             log_probs = batch['rollout_behavior_log_probs'][0]
-            # Extract only response log probs
             response_logprobs = log_probs[:len(response_ids)].tolist()
         
-        # Extract metrics
         metrics = AgentLoopMetrics(
             generate_sequences=0.0,
             tool_calls=0.0
         )
         
-        # Get reward score if available
         reward_score = None
         if 'extra_data' in data_proto.non_tensor_batch:
             extra_data = data_proto.non_tensor_batch['extra_data'][0]
             if isinstance(extra_data, dict):
                 reward_score = extra_data.get('reward', None)
         
-        # Get number of turns
-        num_turns = 1  # Default
+        num_turns = 1
         if 'extra_data' in data_proto.non_tensor_batch:
             extra_data = data_proto.non_tensor_batch['extra_data'][0]
             if isinstance(extra_data, dict) and 'stats' in extra_data:
@@ -140,3 +124,18 @@ class ReactAgentLoop(AgentLoopBase):
             reward_score=reward_score,
             extra_fields={}
         )
+
+
+def main():
+    """Entry point for training - runs VERL's main PPO trainer with react_agent registered."""
+    from verl.trainer.main_ppo import main as verl_main
+    verl_main()
+
+
+if __name__ == "__main__":
+    # Import this module to ensure @register decorator runs
+    # This is necessary for distributed training across multiple GPUs
+    # because Ray workers run in separate processes and need to import
+    # the custom agent loop to register it
+    __import__('scripts.rl_training.react_training')
+    main()

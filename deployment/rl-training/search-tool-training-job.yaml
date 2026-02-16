@@ -1,0 +1,121 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wandb-config-search-tool
+  namespace: liuyunxin
+data:
+  settings: |
+    [default]
+    base_url = http://wandb-server.liuyunxin:80
+    entity = rexxy-sasori
+    project = search_tool_agent_training
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: foldagent-search-tool-training
+  namespace: liuyunxin
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "false"
+      labels:
+        app: foldagent-search-tool-training
+        job: foldagent-search-tool-training
+    spec:
+      restartPolicy: OnFailure
+      volumes:
+        - name: rl-training-storage
+          persistentVolumeClaim:
+            claimName: pvc-gpfshome-liuyunxin
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
+        - name: wandb-config
+          configMap:
+            name: wandb-config-search-tool
+            items:
+              - key: settings
+                path: settings
+      containers:
+        - name: rl-training
+          image: harbor.xa.xshixun.com:7443/hanfeigeng/agent-rl-training:app-verl0.5-transformers4.55.4-sglang0.4.10.post2-mcore0.13.0-te2.2-v0.17
+          command: ["bash", "-c"]
+          args:
+            - |
+              python3 -c "import wandb; wandb.init(project='test_shell', mode='online')"
+              scripts/rl_training/launch_configs/search_tool_training_with_judge.sh 
+          resources:
+            requests:
+              cpu: 32
+              memory: 320Gi
+              nvidia.com/gpu: 4
+            limits:
+              cpu: 32
+              memory: 320Gi
+              nvidia.com/gpu: 4
+          volumeMounts:
+            - name: rl-training-storage
+              mountPath: /root
+            - name: dshm
+              mountPath: /dev/shm
+            - name: wandb-config
+              mountPath: /root/.config/wandb/settings
+              subPath: settings
+          env:
+            - name: LOG_EVENT_TO_DB
+              value: "false"
+            - name: RAY_DISABLE_METRICS_EXPORTER
+              value: "1"
+            - name: WANDB_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wandb-secret
+                  key: api-key
+            - name: WANDB_BASE_URL
+              value: http://wandb-server.liuyunxin:80
+            - name: HF_HOME
+              value: "/root/.cache/huggingface/hub"
+            - name: TRANSFORMERS_CACHE
+              value: "/root/.cache/huggingface/hub"
+            - name: NO_PROXY
+              value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+            - name: no_proxy
+              value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+            - name: HF_ENDPOINT
+              value: "https://hf-mirror.com"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token-secret
+                  key: HF_TOKEN
+            - name: http_proxy
+              value: "http://192.168.3.226:7890"
+            - name: https_proxy
+              value: "http://192.168.3.226:7890"
+            - name: HTTP_PROXY
+              value: "http://192.168.3.226:7890"
+            - name: HTTPS_PROXY
+              value: "http://192.168.3.226:7890"
+            - name: APT_PROXY
+              value: "http://192.168.3.241:3142"
+            - name: PIP_INDEX_URL
+              value: "http://192.168.12.70:9181/repository/pypi-proxy/simple/"
+            - name: PIP_TRUSTED_HOST
+              value: "192.168.12.70"
+            - name: JUDGE_OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: foldagent-eval-secrets
+                  key: research-group-api-key
+            - name: JUDGE_OPENAI_BASE_URL
+              value: "https://lonlie.plus7.plus/v1"
+            - name: JUDGE_OPENAI_URL
+              value: "https://lonlie.plus7.plus/v1/chat/completions"
+            - name: JUDGE_OPENAI_MODEL
+              value: "gpt-4.1"
+            - name: LOCAL_SEARCH_URL
+              value: "http://search-server.liuyunxin:8000"

@@ -6,7 +6,7 @@ set -x
 export WANDB_API_KEY=$WANDB_API_KEY
 export WANDB_BASE_URL=$(echo "$WANDB_BASE_URL" | tr -d '`' | xargs)
 export WANDB_ENTITY=rexxy-sasori
-export WANDB_PROJECT=react_agent_training
+export WANDB_PROJECT=search_tool_agent_training
 
 wandb status
 
@@ -28,6 +28,7 @@ export TOKENIZERS_PARALLELISM=true
 export SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1
 
 export LOCAL_SEARCH_URL=${LOCAL_SEARCH_URL:-http://localhost:8000}
+export SEARCH_SERVER_URL=${LOCAL_SEARCH_URL}
 
 mkdir -p "$WANDB_DIR"
 mkdir -p "$LOG_DIR"
@@ -38,8 +39,8 @@ RESPONSE_LENGTH=32768
 MAX_LENGTH=49152
 MODEL_PATH=ByteDance-Seed/Seed-OSS-36B-Instruct
 
-TRAIN_DATA_PATH=/root/rl-training/data/bc_train.parquet
-TEST_DATA_PATH=/root/rl-training/data/bc_test.parquet
+TRAIN_DATA_PATH=/root/rl-training/data/bc_train_with_system.parquet
+TEST_DATA_PATH=/root/rl-training/data/bc_test_with_system.parquet
 
 if [ ! -f "$TRAIN_DATA_PATH" ]; then
   echo "Copying training data from built-in directory..."
@@ -52,17 +53,19 @@ echo "Using training data: $TRAIN_DATA_PATH"
 python3 scripts/rl_training/main.py \
 algorithm.adv_estimator=grpo \
 algorithm.mask_overlong=False \
-actor_rollout_ref.rollout.agent.default_agent_loop=react_agent \
-actor_rollout_ref.rollout.agent.agent_loop_config_path=/app/scripts/rl_training/agent_loops/configs/react_agent.yaml \
+actor_rollout_ref.rollout.agent.default_agent_loop=tool_agent \
 actor_rollout_ref.rollout.name=sglang \
 actor_rollout_ref.rollout.mode=async \
 actor_rollout_ref.rollout.calculate_log_probs=True \
 +actor_rollout_ref.rollout.engine_kwargs.sglang.context_length=49152 \
 +actor_rollout_ref.rollout.engine_kwargs.sglang.allow_auto_truncate=true \
-+actor_rollout_ref.rollout.plugin.workflow=search \
-+actor_rollout_ref.rollout.plugin.max_turn=20 \
-+actor_rollout_ref.rollout.plugin.val_max_turn=20 \
-actor_rollout_ref.model.path=$MODEL_PATH \
++actor_rollout_ref.rollout.multi_turn.tool_config_path=/app/scripts/rl_training/agent_loops/configs/search_tool_config.yaml \
++actor_rollout_ref.rollout.multi_turn.interaction_config_path=/app/scripts/rl_training/agent_loops/configs/judge_interaction.yaml \
++actor_rollout_ref.rollout.multi_turn.max_user_turns=10 \
++actor_rollout_ref.rollout.multi_turn.max_assistant_turns=10 \
++actor_rollout_ref.rollout.multi_turn.max_parallel_calls=5 \
++actor_rollout_ref.rollout.multi_turn.format=gpt-oss \
+actor_rollout_ref.rollout.model.path=$MODEL_PATH \
 actor_rollout_ref.rollout.prompt_length=$PROMPT_LENGTH \
 actor_rollout_ref.rollout.response_length=$RESPONSE_LENGTH \
 actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=$MAX_LENGTH \
@@ -87,8 +90,6 @@ actor_rollout_ref.actor.ppo_infer_max_token_len_per_gpu=$MAX_LENGTH \
 actor_rollout_ref.rollout.dtype=bfloat16 \
 actor_rollout_ref.rollout.do_sample=True \
 reward_model.use_reward_loop=False \
-reward_manager.custom_reward_function.path=/app/scripts/rl_training/reward_fn.py \
-reward_manager.custom_reward_function.name=compute_reward \
 trainer.val_before_train=False \
 trainer.val_only=False \
 trainer.n_gpus_per_node=4 \
@@ -98,6 +99,6 @@ trainer.test_freq=10 \
 trainer.save_freq=10 \
 trainer.max_actor_ckpt_to_keep=1 \
 trainer.max_critic_ckpt_to_keep=1 \
-trainer.project_name=react_agent_training \
-trainer.experiment_name=seed_oss_36b_instruct_react_h200 \
+trainer.project_name=search_tool_agent_training \
+trainer.experiment_name=seed_oss_36b_instruct_search_tool_with_judge \
 trainer.logger=wandb

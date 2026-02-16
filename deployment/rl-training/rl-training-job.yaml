@@ -1,3 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wandb-config
+  namespace: liuyunxin
+data:
+  settings: |
+    [default]
+    base_url = http://wandb-server.liuyunxin:80
+    entity = rexxy-sasori
+    project = react_agent_training
+---
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -22,12 +34,20 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 16Gi
+        - name: wandb-config
+          configMap:
+            name: wandb-config
+            items:
+              - key: settings
+                path: settings
       containers:
         - name: rl-training
-          image: harbor.xa.xshixun.com:7443/hanfeigeng/agent-rl-training:app-verl0.5-transformers4.55.4-sglang0.4.10.post2-mcore0.13.0-te2.2-v0.1
+          image: harbor.xa.xshixun.com:7443/hanfeigeng/agent-rl-training:app-verl0.5-transformers4.55.4-sglang0.4.10.post2-mcore0.13.0-te2.2-v0.17
           command: ["bash", "-c"]
           args:
-            - sleep infinity
+            - |
+              python3 -c "import wandb; wandb.init(project='test_shell', mode='online')"
+              scripts/rl_training/launch_configs/react_training.sh 
           resources:
             requests:
               cpu: 32
@@ -42,6 +62,9 @@ spec:
               mountPath: /root
             - name: dshm
               mountPath: /dev/shm
+            - name: wandb-config
+              mountPath: /root/.config/wandb/settings
+              subPath: settings
           env:
             - name: LOG_EVENT_TO_DB
               value: "false"
@@ -53,7 +76,7 @@ spec:
                   name: wandb-secret
                   key: api-key
             - name: WANDB_BASE_URL
-              value: "http://wandb-server.liuyunxin:80"
+              value: http://wandb-server.liuyunxin:80
             - name: HF_HOME
               value: "/root/.cache/huggingface/hub"
             - name: TRANSFORMERS_CACHE
@@ -94,3 +117,6 @@ spec:
               value: "https://lonlie.plus7.plus/v1/chat/completions"
             - name: JUDGE_OPENAI_MODEL
               value: "gpt-4.1"
+            - name: LOCAL_SEARCH_URL
+              value: "http://search-server.liuyunxin:8000"
+          

@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
       - name: search-server
-        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:0.64-log-llmbackend 
+        image: harbor.xa.xshixun.com:7443/hanfeigeng/context-fold-agent:1.05-llm-log-backend
         # command: ["sleep", "infinity"]
         command: ["bash", "-c"]
         args:

@@ -19,6 +19,36 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
+def get_dataproto_value(item, key, default=None):
+    """
+    Safely extract value from DataProto non_tensor_batch.
+    Works for both 0-d arrays (VERL) and 1-d arrays (eval_bc).
+    
+    Args:
+        item: DataProto object
+        key: Key to extract from non_tensor_batch
+        default: Default value if key not found
+    
+    Returns:
+        Extracted value (scalar for 0-d arrays, first element for 1-d arrays)
+    """
+    if key not in item.non_tensor_batch:
+        return default
+    
+    value = item.non_tensor_batch[key]
+    
+    # Handle numpy arrays
+    if isinstance(value, np.ndarray):
+        if value.ndim == 0:
+            # 0-d array (scalar) - return the scalar value
+            return value.item()
+        else:
+            # 1-d or higher - return first element
+            return value[0]
+    
+    # Handle other types (already scalar)
+    return value
+
 GRADER_TEMPLATE = """
 Judge whether the following [response] to [question] is correct or not based on the precise and unambiguous [correct_answer] below.
 
@@ -519,13 +549,14 @@ class LocalSearch:
         self.is_finish = False
 
     async def init_env(self, item):
-        self.question = item.non_tensor_batch['extra_info'][0]['query']
-        self.label_answer = item.non_tensor_batch['extra_info'][0]['answer']
+        self.question = get_dataproto_value(item, 'extra_info', {}).get('query')
+        self.label_answer = get_dataproto_value(item, 'extra_info', {}).get('answer')
         self.predicted_answer = None
 
     async def get_data(self, item, context):
-        if 'prompt' in item.non_tensor_batch['extra_info'][0]:
-            prompt = item.non_tensor_batch['extra_info'][0]['prompt']
+        extra_info = get_dataproto_value(item, 'extra_info', {})
+        if 'prompt' in extra_info:
+            prompt = extra_info['prompt']
             conversations = [
                 {'role': 'system', 'content': prompt[0]['content']},
                 {'role': 'user', 'content': prompt[-1]['content']},
@@ -537,11 +568,13 @@ class LocalSearch:
                 {'role': 'user', 'content': ''},
             ]
 
-        self.instance_info = copy.deepcopy(item.non_tensor_batch['extra_info'][0])
+        self.instance_info = copy.deepcopy(extra_info)
         self.instance_info['problem_statement'] = self.instance_info['query']
-        meta_info = copy.copy(item.meta_info)
-        meta_info['uid'] = item.non_tensor_batch['uid'][0]
-        meta_info['reward_model'] = item.non_tensor_batch['reward_model'][0]
+        
+        # Copy meta_info from item to preserve generation_kwargs and other metadata
+        meta_info = copy.copy(item.meta_info) if hasattr(item, 'meta_info') and item.meta_info else {}
+        meta_info['uid'] = get_dataproto_value(item, 'uid')
+        meta_info['reward_model'] = get_dataproto_value(item, 'reward_model')
 
         if "max_turn" in item.meta_info:
             max_turn = item.meta_info["max_turn"]

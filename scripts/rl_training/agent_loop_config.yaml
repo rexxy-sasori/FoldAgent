@@ -1,2 +1,0 @@
-- name: react_agent
-  _target_: scripts.rl_training.react_training.ReactAgentLoop

@@ -9,7 +9,9 @@ WORKDIR /app
 COPY external/verl/ /app/external/verl/
 RUN pip uninstall -y verl || true && \
     pip install --no-cache-dir -e /app/external/verl/  && \
-    pip install --no-cache-dir transformers==4.57.1
+    pip install --no-cache-dir transformers==4.57.1 && \
+    pip install wandb --upgrade && \
+    pip install sqlalchemy asyncpg
 
 # Job 2: Copy FoldAgent directories
 COPY agents/ /app/agents/

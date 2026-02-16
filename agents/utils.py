@@ -8,9 +8,10 @@ from unittest.mock import patch
 from itertools import groupby
 import re, unicodedata
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Any
 from omegaconf import DictConfig
 from transformers import PreTrainedTokenizer
+import numpy as np
 import aiohttp
 import torch
 import asyncio, httpx
@@ -22,6 +23,37 @@ from .db_client import log_event, global_event_db
 LOG_EVENT_TO_DB = os.environ.get('LOG_EVENT_TO_DB', 'false').lower() == 'true'
 
 logger = logging.getLogger(__name__)
+
+
+def get_dataproto_value(item, key, default=None):
+    """
+    Safely extract value from DataProto non_tensor_batch.
+    Works for both 0-d arrays (VERL) and 1-d arrays (eval_bc).
+    
+    Args:
+        item: DataProto object
+        key: Key to extract from non_tensor_batch
+        default: Default value if key not found
+    
+    Returns:
+        Extracted value (scalar for 0-d arrays, first element for 1-d arrays)
+    """
+    if key not in item.non_tensor_batch:
+        return default
+    
+    value = item.non_tensor_batch[key]
+    
+    # Handle numpy arrays
+    if isinstance(value, np.ndarray):
+        if value.ndim == 0:
+            # 0-d array (scalar) - return the scalar value
+            return value.item()
+        else:
+            # 1-d or higher - return first element
+            return value[0]
+    
+    # Handle other types (already scalar)
+    return value
 
 
 def select_env(ability, config, extra_info=None):
@@ -691,6 +723,126 @@ def truncate_prompt(chat, prompt_length, tokenizer, prompt_turn):
     return chat
 
 
+class VERLNativeLLM:  # Call policy LLM in RL env using VERL's server_manager
+    def __init__(self, server_manager, tokenizer, config, meta_info, agent_type="unknown"):
+        self.server_manager = server_manager
+        self.tokenizer = tokenizer
+        self.config = config
+        self.meta_info = meta_info
+        self.agent_type = agent_type
+
+    async def _create_completion(self, input_ids, **kwargs):
+        generation_kwargs = self.meta_info.get('generation_kwargs', {})
+        
+        # Set defaults for missing generation parameters
+        generation_kwargs = {
+            'temperature': generation_kwargs.get('temperature', 1.0),
+            'top_p': generation_kwargs.get('top_p', 1.0),
+            'repetition_penalty': generation_kwargs.get('repetition_penalty', 1.0),
+        }
+        
+        max_len = kwargs.pop('max_len', None) or self.config.prompt_length + self.config.response_length
+        max_len = min(max_len, self.config.prompt_length + self.config.response_length)
+        max_tokens = max_len - len(input_ids)
+        # This is used to avoid repetitive generation.
+        if getattr(self.config.plugin, 'turn_max_new_tokens', -1) > 0:
+            max_tokens = min(max_tokens, self.config.plugin.turn_max_new_tokens)
+        if 'max_new_tokens' in kwargs:
+            max_tokens = min(max_tokens, kwargs['max_new_tokens'])
+
+        if max_tokens < 10:
+            logger.debug(f"[DEBUG] max_tokens {max_tokens}, skip rollout")
+            return None
+
+        uid = kwargs.pop('uid', self.meta_info.get('uid', None))
+        # Get role agent_type from kwargs (main/branch) and preserve original client agent_type
+        role_agent_type = kwargs.pop('agent_type', self.agent_type)
+        source_agent_type = self.agent_type  # Original client agent_type (fold_agent/react_agent)
+        agent_name = kwargs.pop('agent_name', role_agent_type)
+
+        # Use configurable track_log_prob parameter from config
+        track_log_prob = getattr(self.config.plugin, 'track_log_prob', False)
+        
+        # Create sampling params for server_manager.generate()
+        sampling_params = generation_kwargs.copy()
+        sampling_params['max_new_tokens'] = max_tokens
+        
+        # Generate request ID
+        import uuid
+        request_id = self.meta_info.get('request_id', str(uuid.uuid4()))
+        
+        try:
+            # Use VERL's server_manager.generate() instead of HTTP call
+            output = await self.server_manager.generate(
+                request_id=request_id,
+                prompt_ids=input_ids,
+                sampling_params=sampling_params,
+                image_data=None  # No image data for text-only model
+            )
+            
+            # Convert server_manager.generate() output to CallLLM-compatible format
+            response_ids = output.token_ids
+            response_log_probs = output.log_probs if output.log_probs else []
+            
+            # Decode response to text
+            text = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+            
+            # Create completion response in the format expected by Agent class
+            completion = {
+                "choices": [{
+                    "message": {
+                        "content": text,
+                        "raw_output_ids": response_ids,
+                        "response_log_probs": response_log_probs,
+                        "extra_data": {"input_ids": input_ids, "request_id": request_id},
+                        "metrics": {"usage": {
+                            "prompt_tokens": len(input_ids),
+                            "completion_tokens": len(response_ids),
+                            "total_tokens": len(input_ids) + len(response_ids)
+                        }}
+                    }
+                }],
+                "usage": {
+                    "prompt_tokens": len(input_ids),
+                    "completion_tokens": len(response_ids),
+                    "total_tokens": len(input_ids) + len(response_ids)
+                }
+            }
+            
+            return completion
+            
+        except Exception as e:
+            logger.error(f"[VERLNativeLLM ERROR ({self.agent_type})] {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    async def create_completion(self, input_ids, **kwargs):
+        # For VERLNativeLLM, we don't support call_openai like CallLLM does
+        # Just call _create_completion directly
+        completion = await self._create_completion(input_ids, **kwargs)
+        
+        # Ensure metrics are properly structured
+        if completion and "choices" in completion and len(completion["choices"]) > 0:
+            message = completion["choices"][0]["message"]
+            
+            # Extract usage from top-level if present
+            if not hasattr(message, 'metrics') and 'metrics' not in message:
+                message['metrics'] = {}
+            if 'usage' not in message['metrics']:
+                message['metrics']['usage'] = {}
+            
+            # Copy usage metrics from top-level to message.metrics.usage
+            if hasattr(completion, 'usage'):
+                for key, value in vars(completion.usage).items():
+                    message['metrics']['usage'][key] = value
+            elif 'usage' in completion:
+                for key, value in completion['usage'].items():
+                    message['metrics']['usage'][key] = value
+        
+        return completion
+
+
 class AgentContext:
     # Manage context of an agent
     def __init__(self, chat, tokenizer, config, prompt_turn=2):
@@ -1004,6 +1156,7 @@ class TaskContext:
     is_train: bool
     run_id: str = 'unknown'
     tokenizer: Optional[PreTrainedTokenizer] = None
+    server_manager: Optional[Any] = None
 
 
 async def run_action(env, response, request_id=None):

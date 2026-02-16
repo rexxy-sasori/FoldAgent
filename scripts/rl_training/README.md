@@ -19,7 +19,7 @@ Complete guide for training react agents using VERL framework with Ray distribut
 
 ### What is React Agent?
 
-React agent implements the ReAct (Reason + Act) paradigm:
+React agent implements ReAct (Reason + Act) paradigm:
 - **Think**: Generate reasoning about current state
 - **Act**: Execute tool calls based on reasoning
 - **Observe**: Process tool results
@@ -57,28 +57,37 @@ Training Data → ReactAgentLoop → react_agent.process_item() → DataProto
 
 ### Key Components
 
-#### [`react_training.py`](react_training.py)
-- **Purpose**: Training entry point and agent loop implementation
+#### [`agent_loops/react_agent_loop.py`](agent_loops/react_agent_loop.py)
+- **Purpose**: React agent loop implementation
 - **Key Class**: `ReactAgentLoop` - Registered as `react_agent`
 - **Key Method**: `run()` - Executes react agent workflow
 - **Type Conversion**: `_convert_dataproto_to_agentloopoutput()` - Converts DataProto to AgentLoopOutput
 
-#### [`react_training.sh`](react_training.sh)
+#### [`agent_loops/configs/react_agent.yaml`](agent_loops/configs/react_agent.yaml)
+- **Purpose**: Agent loop configuration
+- **Key Field**: `_target_` - Points to ReactAgentLoop class
+
+#### [`launch_configs/react_training.sh`](launch_configs/react_training.sh)
 - **Purpose**: Shell script to configure and run training
 - **Configuration**: Sets model paths, data paths, and training hyperparameters
+
+#### [`main.py`](main.py)
+- **Purpose**: Training entry point
+- **Key Function**: `main()` - Runs VERL's PPO trainer
+- **Registration**: Imports agent loop to ensure @register decorator runs
 
 ## Prerequisites
 
 ### 1. Start Search Server
 
 ```bash
-# Start the local search server (envs/search_server.py)
-# This is the only external service needed for react_agent
+# Start local search server (envs/search_server.py)
+# This is only external service needed for react_agent
 python envs/search_server.py
 # Server runs on http://localhost:8000
 ```
 
-**Note**: Unlike VERL's built-in `tool_agent`, `react_agent` does NOT need `verl_tool_adaptor`. It directly uses `envs/local_search.py` which connects to the search server.
+**Note**: Unlike VERL's built-in `tool_agent`, `react_agent` does NOT need `verl_tool_adaptor`. It directly uses `envs/local_search.py` which connects to search server.
 
 ### 2. Prepare Data
 
@@ -96,11 +105,17 @@ scripts/
 ├── __init__.py                    # ← Makes scripts/ a package
 ├── rl_training/
 │   ├── __init__.py                # ← Makes scripts.rl_training/ a package
-│   ├── react_training.py
-│   └── ...
+│   ├── agent_loops/
+│   │   ├── __init__.py            # ← Makes scripts.rl_training.agent_loops/ a package
+│   │   ├── react_agent_loop.py    # ← React agent loop implementation
+│   │   └── configs/
+│   │       └── react_agent.yaml   # ← React agent loop configuration
+│   ├── launch_configs/
+│   │   └── react_training.sh     # ← Training launch script
+│   └── main.py                   # ← Training entry point
 ```
 
-**Why this is necessary**: Ray distributed workers need to import `scripts.rl_training.react_training` as a Python package, which requires `__init__.py` files.
+**Why this is necessary**: Ray distributed workers need to import `scripts.rl_training.agent_loops.react_agent_loop` as a Python package, which requires `__init__.py` files.
 
 ## Quick Start
 
@@ -108,14 +123,14 @@ scripts/
 
 ```bash
 cd /app/scripts/rl_training
-bash react_training.sh
+bash launch_configs/react_training.sh
 ```
 
 ### Multi-GPU Training
 
 ```bash
 cd /app/scripts/rl_training
-bash react_training.sh
+bash launch_configs/react_training.sh
 # Automatically uses all available GPUs via Ray
 ```
 
@@ -136,7 +151,7 @@ export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
 
 ### Training Parameters
 
-In [`react_training.sh`](react_training.sh):
+In [`launch_configs/react_training.sh`](launch_configs/react_training.sh):
 
 ```bash
 # Model configuration
@@ -157,6 +172,9 @@ MAX_TURNS=20
 ```bash
 # Agent loop configuration
 actor_rollout_ref.rollout.agent.default_agent_loop=react_agent
+
+# Agent loop config path
+actor_rollout_ref.rollout.agent.agent_loop_config_path=/app/scripts/rl_training/agent_loops/configs/react_agent.yaml
 
 # Workflow configuration
 actor_rollout_ref.rollout.plugin.workflow=search
@@ -190,7 +208,7 @@ docker run -it --gpus all \
 
 # Inside container
 cd /app/scripts/rl_training
-bash react_training.sh
+bash launch_configs/react_training.sh
 ```
 
 #### Option 2: Direct Command
@@ -200,7 +218,7 @@ docker run -it --gpus all \
     -v /Users/rexsasori/FoldAgent:/app \
     -p 8000:8000 \
     foldagent-rl-training:latest \
-    bash -c "cd /app/scripts/rl_training && bash react_training.sh"
+    bash -c "cd /app/scripts/rl_training && bash launch_configs/react_training.sh"
 ```
 
 ### Docker Environment
@@ -220,14 +238,14 @@ Ray distributed training runs across multiple GPUs, with each GPU having its own
 
 ```
 Main Process (GPU 0):
-  - Imports scripts.rl_training.react_training
+  - Imports scripts.rl_training.agent_loops.react_agent_loop
   - @register runs
   - react_agent added to registry ✓
   - Spawns Ray workers
 
 Ray Worker (GPU 1):
   - Starts fresh process
-  - Imports scripts.rl_training.react_training
+  - Imports scripts.rl_training.agent_loops.react_agent_loop
   - @register runs
   - react_agent added to registry ✓
 
@@ -248,7 +266,7 @@ Ray Worker (GPU 3):
 
 ```python
 # 1. Module is imported
-import scripts.rl_training.react_training
+import scripts.rl_training.agent_loops.react_agent_loop
 
 # 2. @register decorator runs
 @register("react_agent")
@@ -257,7 +275,7 @@ class ReactAgentLoop(AgentLoopBase):
 
 # 3. Class is added to registry
 _agent_loop_registry["react_agent"] = {
-    "_target_": "scripts.rl_training.react_training.ReactAgentLoop"
+    "_target_": "scripts.rl_training.agent_loops.react_agent_loop.ReactAgentLoop"
 }
 ```
 
@@ -273,11 +291,12 @@ _agent_loop_registry["react_agent"] = {
 
 **Cause**: Missing `__init__.py` files
 
-**Solution**: Create `__init__.py` in both directories:
+**Solution**: Create `__init__.py` in all directories:
 
 ```bash
 touch scripts/__init__.py
 touch scripts/rl_training/__init__.py
+touch scripts/rl_training/agent_loops/__init__.py
 ```
 
 #### Issue: Works on single GPU but fails on multiple GPUs
@@ -341,7 +360,7 @@ actor_rollout_ref.actor.fsdp_config.optimizer_offload=True
 
 ### H200-Specific Optimizations
 
-The [`react_training.sh`](react_training.sh) script includes H200-specific environment variables:
+The [`launch_configs/react_training.sh`](launch_configs/react_training.sh) script includes H200-specific environment variables:
 
 ```bash
 # NCCL optimizations for high-speed interconnect
@@ -349,16 +368,13 @@ export NCCL_DEBUG=WARN
 export NCCL_IB_DISABLE=0
 export NCCL_NET_GDR_LEVEL=5
 
-# vLLM optimizations
-export VLLM_USE_V1=1
-export VLLM_LOGGING_LEVEL=WARN
-export VLLM_ALLOW_RUNTIME_LORA_UPDATING=true
-export VLLM_ALLREDUCE_USE_SYMM_MEM=0
-
 # CUDA optimizations
 export NCCL_CUMEM_ENABLE=0
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export TOKENIZERS_PARALLELISM=true
+
+# SGLang configuration
+export SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1
 ```
 
 ### Launch Command
@@ -370,7 +386,7 @@ docker run -it --gpus all \
     -p 8000:8000 \
     -e NCCL_DEBUG=WARN \
     foldagent-rl-training:latest \
-    bash -c "cd /app/scripts/rl_training && bash react_training.sh"
+    bash -c "cd /app/scripts/rl_training && bash launch_configs/react_training.sh"
 ```
 
 ### H200-Specific Optimizations
@@ -548,7 +564,8 @@ export NCCL_NET_GDR_LEVEL=5
 # Test that packages are importable
 python -c "import scripts; print('✓ scripts package imported')"
 python -c "import scripts.rl_training; print('✓ scripts.rl_training package imported')"
-python -c "from scripts.rl_training.react_training import ReactAgentLoop; print('✓ ReactAgentLoop imported')"
+python -c "import scripts.rl_training.agent_loops; print('✓ scripts.rl_training.agent_loops package imported')"
+python -c "from scripts.rl_training.agent_loops.react_agent_loop import ReactAgentLoop; print('✓ ReactAgentLoop imported')"
 ```
 
 ### Verify Registration
@@ -568,7 +585,7 @@ for name in sorted(_agent_loop_registry.keys()):
 
 ```bash
 # Should work without issues
-python scripts/rl_training/react_training.py \
+python scripts/rl_training/main.py \
     actor_rollout_ref.rollout.agent.default_agent_loop=react_agent \
     # ... other config
 ```
@@ -577,7 +594,7 @@ python scripts/rl_training/react_training.py \
 
 ```bash
 # Should work with proper registration
-python scripts/rl_training/react_training.py \
+python scripts/rl_training/main.py \
     actor_rollout_ref.rollout.agent.default_agent_loop=react_agent \
     # ... other config
 ```
@@ -587,11 +604,55 @@ python scripts/rl_training/react_training.py \
 ```
 scripts/rl_training/
 ├── README.md                    # This guide
-├── react_training.py            # Training entry point + agent loop
-├── react_training.sh            # Training script with configuration
-├── rl_training.py              # Fold agent training (reference)
-├── rl_training.sh              # Fold agent training script (reference)
-└── __init__.py                # Python package marker
+├── main.py                     # Training entry point
+├── agent_loops/
+│   ├── __init__.py             # Python package marker
+│   ├── react_agent_loop.py     # React agent loop implementation
+│   └── configs/
+│       └── react_agent.yaml    # React agent loop configuration
+└── launch_configs/
+    └── react_training.sh       # Training launch script
+```
+
+## Adding New Agent Loops
+
+To add a new agent loop:
+
+1. Create a new agent loop file in `agent_loops/`:
+```bash
+# scripts/rl_training/agent_loops/my_agent_loop.py
+from verl.experimental.agent_loop.agent_loop import AgentLoopBase, register
+
+@register("my_agent")
+class MyAgentLoop(AgentLoopBase):
+    async def run(self, sampling_params, **kwargs):
+        # Your agent logic here
+        pass
+```
+
+2. Create a config file in `agent_loops/configs/`:
+```yaml
+# scripts/rl_training/agent_loops/configs/my_agent.yaml
+- name: my_agent
+  _target_: scripts.rl_training.agent_loops.my_agent_loop.MyAgentLoop
+```
+
+3. Create a launch script in `launch_configs/`:
+```bash
+# scripts/rl_training/launch_configs/my_training.sh
+python3 scripts/rl_training/main.py \
+    actor_rollout_ref.rollout.agent.default_agent_loop=my_agent \
+    actor_rollout_ref.rollout.agent.agent_loop_config_path=/app/scripts/rl_training/agent_loops/configs/my_agent.yaml \
+    # ... other config
+```
+
+4. Update `agent_loops/__init__.py` to export the new agent:
+```python
+# scripts/rl_training/agent_loops/__init__.py
+from .react_agent_loop import ReactAgentLoop
+from .my_agent_loop import MyAgentLoop
+
+__all__ = ['ReactAgentLoop', 'MyAgentLoop']
 ```
 
 ## Best Practices

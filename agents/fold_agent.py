@@ -12,7 +12,7 @@ import numpy as np
 import torch
 
 from verl import DataProto
-from .utils import CallLLM, Agent, select_env, truncate_text, is_weird, TaskContext, CallAPI, run_action
+from .utils import CallLLM, Agent, select_env, truncate_text, is_weird, TaskContext, CallAPI, run_action, get_dataproto_value
 from .prompts import create_chat
 from .prompts import BRANCH_MESSAGE_SEARCH, BRANCH_MESSAGE, SUMMARY_PROMPT_CODE, SUMMARY_PROMPT_SEARCH
 from .verifier import judge_scope
@@ -73,7 +73,7 @@ async def process_item(
 ) -> DataProto:
     start_time = time.time()
     # Generate request_id based on item UID and agent type for consistent comparison
-    item_uid = item.non_tensor_batch['uid'][0] if 'uid' in item.non_tensor_batch else str(uuid.uuid4())
+    item_uid = get_dataproto_value(item, 'uid', str(uuid.uuid4()))
     # Use run_id from context if available, otherwise generate a new one
     run_id = getattr(context, 'run_id', uuid.uuid4().hex[:8])  # Short unique identifier for this run
     request_id = f"{item_uid}_fold_agent_{run_id}"
@@ -86,8 +86,7 @@ async def process_item(
     if not is_train:
         if getattr(config.plugin, "val_response_length", None):
             config.response_length = getattr(config.plugin, "val_response_length", None)
-
-    ability = item.non_tensor_batch['ability'][0]
+    ability = get_dataproto_value(item, 'ability')
 
     # Select env
     EnvClass = select_env(ability, config, )
@@ -100,8 +99,8 @@ async def process_item(
         logger.error(f"[Error] during environment init: {str(e)}")
 
     user_prompt, agent_config = await env.get_data(item, context)
-    workflow = item.non_tensor_batch['extra_info'][0].get('workflow', None) or getattr(config.plugin, "workflow",
-                                                                                       "search")
+    extra_info = get_dataproto_value(item, 'extra_info', {})
+    workflow = extra_info.get('workflow', None) or getattr(config.plugin, "workflow", "search")
     user_prompt = create_chat(env.instance_info['problem_statement'], workflow, item)
 
     branch_prompt = BRANCH_MESSAGE_SEARCH if 'search' in workflow else BRANCH_MESSAGE
@@ -410,15 +409,14 @@ async def process_item(
         try:
             # Get difficulty if available
             difficulty = None
-            if 'extra_info' in item.non_tensor_batch and item.non_tensor_batch['extra_info']:
-                extra_info = item.non_tensor_batch['extra_info'][0]
-                if 'difficulty' in extra_info:
-                    difficulty = extra_info['difficulty']
+            extra_info = get_dataproto_value(item, 'extra_info', {})
+            if 'difficulty' in extra_info:
+                difficulty = extra_info['difficulty']
             elif 'difficulty' in item.non_tensor_batch:
-                difficulty = item.non_tensor_batch['difficulty'][0]
+                difficulty = get_dataproto_value(item, 'difficulty')
             # Check data_source for difficulty
-            elif 'data_source' in item.non_tensor_batch and item.non_tensor_batch['data_source']:
-                data_source = item.non_tensor_batch['data_source'][0]
+            elif 'data_source' in item.non_tensor_batch:
+                data_source = get_dataproto_value(item, 'data_source')
                 # Extract difficulty from data_source (e.g., "easy", "medium", "hard")
                 if isinstance(data_source, str):
                     # Check if data_source contains difficulty keywords
@@ -617,11 +615,15 @@ async def process_item(
         for out in outs:
             if 'extra_data' not in out.non_tensor_batch:
                 out.non_tensor_batch['extra_data'] = np.array([{}], dtype=object)
-            if 'stats' not in out.non_tensor_batch['extra_data'][0]:
-                out.non_tensor_batch['extra_data'][0]['stats'] = {}
-            out.non_tensor_batch['extra_data'][0]['stats']['completion_time'] = completion_time
-            out.non_tensor_batch['extra_data'][0]['stats']['full_completion_time'] = full_completion_time
-            out.non_tensor_batch['extra_data'][0]['stats']['request_id'] = request_id
+            
+            extra_data = get_dataproto_value(out, 'extra_data', {})
+            if 'stats' not in extra_data:
+                extra_data['stats'] = {}
+                out.non_tensor_batch['extra_data'] = np.array([extra_data], dtype=object)
+            
+            extra_data['stats']['completion_time'] = completion_time
+            extra_data['stats']['full_completion_time'] = full_completion_time
+            extra_data['stats']['request_id'] = request_id
         res = DataProto.concat(outs)
         logger.info(f'[REQUEST {request_id}] process_item inference completed in {completion_time:.2f} seconds (full time including reward: {full_completion_time:.2f} seconds)')
         return res

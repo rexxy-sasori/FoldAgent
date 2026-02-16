@@ -19,6 +19,37 @@ LOG_EVENT_TO_DB = os.environ.get('LOG_EVENT_TO_DB', 'false').lower() == 'true'
 logger = logging.getLogger(__name__)
 
 
+def get_dataproto_value(item, key, default=None):
+    """
+    Safely extract value from DataProto non_tensor_batch.
+    Works for both 0-d arrays (VERL) and 1-d arrays (eval_bc).
+    
+    Args:
+        item: DataProto object
+        key: Key to extract from non_tensor_batch
+        default: Default value if key not found
+    
+    Returns:
+        Extracted value (scalar for 0-d arrays, first element for 1-d arrays)
+    """
+    if key not in item.non_tensor_batch:
+        return default
+    
+    value = item.non_tensor_batch[key]
+    
+    # Handle numpy arrays
+    if isinstance(value, np.ndarray):
+        if value.ndim == 0:
+            # 0-d array (scalar) - return the scalar value
+            return value.item()
+        else:
+            # 1-d or higher - return first element
+            return value[0]
+    
+    # Handle other types (already scalar)
+    return value
+
+
 ENV_PREFIX_MAP = {}
 
 
@@ -73,8 +104,9 @@ class GymEnv:
         logger.debug('ENV START COST %f', time.time() - start_env)
 
     async def get_data(self, item, context):
-        if 'prompt' in item.non_tensor_batch['extra_info'][0]:
-            prompt = item.non_tensor_batch['extra_info'][0]['prompt']
+        extra_info = get_dataproto_value(item, 'extra_info', {})
+        if 'prompt' in extra_info:
+            prompt = extra_info['prompt']
             conversations = [
                 {'role': 'system', 'content': prompt[0]['content']},
                 {'role': 'user', 'content': prompt[1]['content']},
@@ -89,8 +121,8 @@ class GymEnv:
                 {'role': 'user', 'content': user_prompt},
             ]
         meta_info = copy.copy(item.meta_info)
-        meta_info['uid'] = item.non_tensor_batch['uid'][0]
-        meta_info['reward_model'] = item.non_tensor_batch['reward_model'][0]
+        meta_info['uid'] = get_dataproto_value(item, 'uid')
+        meta_info['reward_model'] = get_dataproto_value(item, 'reward_model')
 
         if "max_turn" in item.meta_info:
             max_turn = item.meta_info["max_turn"]
@@ -125,16 +157,15 @@ class GymEnv:
             
             # Get difficulty if available
             difficulty = None
-            if 'extra_info' in item.non_tensor_batch and item.non_tensor_batch['extra_info']:
-                extra_info = item.non_tensor_batch['extra_info'][0]
-                if 'difficulty' in extra_info:
-                    difficulty = extra_info['difficulty']
-                # Also check if it's in the main non_tensor_batch
+            extra_info = get_dataproto_value(item, 'extra_info', {})
+            if 'difficulty' in extra_info:
+                difficulty = extra_info['difficulty']
+            # Also check if it's in the main non_tensor_batch
             elif 'difficulty' in item.non_tensor_batch:
-                difficulty = item.non_tensor_batch['difficulty'][0]
+                difficulty = get_dataproto_value(item, 'difficulty')
             # Check data_source for difficulty
-            elif 'data_source' in item.non_tensor_batch and item.non_tensor_batch['data_source']:
-                data_source = item.non_tensor_batch['data_source'][0]
+            elif 'data_source' in item.non_tensor_batch:
+                data_source = get_dataproto_value(item, 'data_source')
                 # Extract difficulty from data_source (e.g., "easy", "medium", "hard")
                 if isinstance(data_source, str):
                     # Check if data_source contains difficulty keywords

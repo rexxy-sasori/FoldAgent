@@ -1,3 +1,0 @@
-interactions:
-  - class_name: envs.verl_tool_adaptor.judge_interaction.JudgeInteraction
-    config: {}

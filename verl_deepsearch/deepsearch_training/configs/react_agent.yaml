@@ -1,0 +1,2 @@
+- name: react_agent
+  _target_: verl_deepsearch.deepsearch_training.react_agent_loop.ReActAgentLoop

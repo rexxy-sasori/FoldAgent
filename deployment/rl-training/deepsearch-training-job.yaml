@@ -1,19 +1,19 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: wandb-config-search-tool
+  name: wandb-config-deepsearch
   namespace: liuyunxin
 data:
   settings: |
     [default]
     base_url = http://wandb-server.liuyunxin:80
     entity = rexxy-sasori
-    project = search_tool_agent_training
+    project = react_agent_training
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: foldagent-search-tool-training
+  name: react-deepsearch-training
   namespace: liuyunxin
 spec:
   backoffLimit: 10
@@ -22,8 +22,8 @@ spec:
       annotations:
         prometheus.io/scrape: "false"
       labels:
-        app: foldagent-search-tool-training
-        job: foldagent-search-tool-training
+        app: react-deepsearch-training
+        job: react-deepsearch-training
     spec:
       restartPolicy: OnFailure
       volumes:
@@ -34,35 +34,35 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 16Gi
-        - name: wandb-config
+        - name: wandb-config-deepsearch
           configMap:
-            name: wandb-config-search-tool
+            name: wandb-config-deepsearch
             items:
               - key: settings
                 path: settings
       containers:
         - name: rl-training
-          image: harbor.xa.xshixun.com:7443/hanfeigeng/agent-rl-training:app-verl0.5-transformers4.55.4-sglang0.4.10.post2-mcore0.13.0-te2.2-v0.17
+          image: harbor.xa.xshixun.com:7443/hanfeigeng/agent-rl-training:app-verl0.5-transformers4.55.4-sglang0.4.10.post2-mcore0.13.0-te2.2-v0.99
           command: ["bash", "-c"]
           args:
             - |
               python3 -c "import wandb; wandb.init(project='test_shell', mode='online')"
-              scripts/rl_training/launch_configs/search_tool_training_with_judge.sh 
+              sleep infinity
           resources:
             requests:
               cpu: 32
-              memory: 320Gi
+              memory: 512Gi
               nvidia.com/gpu: 4
             limits:
               cpu: 32
-              memory: 320Gi
+              memory: 512Gi
               nvidia.com/gpu: 4
           volumeMounts:
             - name: rl-training-storage
               mountPath: /root
             - name: dshm
               mountPath: /dev/shm
-            - name: wandb-config
+            - name: wandb-config-deepsearch
               mountPath: /root/.config/wandb/settings
               subPath: settings
           env:
@@ -116,6 +116,7 @@ spec:
             - name: JUDGE_OPENAI_URL
               value: "https://lonlie.plus7.plus/v1/chat/completions"
             - name: JUDGE_OPENAI_MODEL
-              value: "gpt-4.1"
+              value: "gpt-4.1-mini"
             - name: LOCAL_SEARCH_URL
               value: "http://search-server.liuyunxin:8000"
+          

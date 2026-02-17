@@ -18,6 +18,7 @@ COPY agents/ /app/agents/
 COPY data/ /app/data/
 COPY envs/ /app/envs/
 COPY scripts/ /app/scripts/
+COPY verl_deepsearch/ /app/verl_deepsearch/
 
 # Set PYTHONPATH
 ENV PYTHONPATH=/app:/app/external/verl

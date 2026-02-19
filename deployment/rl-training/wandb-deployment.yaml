@@ -13,18 +13,11 @@ spec:
       labels:
         app: wandb-server
     spec:
-      volumes:
-        - name: rl-training-storage
-          persistentVolumeClaim:
-            claimName: pvc-gpfshome-liuyunxin
       containers:
         - name: wandb-server
           image: harbor.xa.xshixun.com:7443/hanfeigeng/wandb/local:latest
           ports:
             - containerPort: 8080
-          volumeMounts:
-            - name: rl-training-storage
-              mountPath: /root/rl-training
           env:
             - name: WANDB_DIR
               value: /root/rl-training/wandb

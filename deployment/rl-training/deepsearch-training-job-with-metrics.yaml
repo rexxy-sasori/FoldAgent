@@ -1,0 +1,250 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wandb-config-deepsearch
+  namespace: liuyunxin
+data:
+  settings: |
+    [default]
+    base_url = http://wandb-server.liuyunxin:80
+    entity = rexxy-sasori
+    project = react_agent_training
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: react-deepsearch-training
+  namespace: liuyunxin
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: react-deepsearch-training
+  template:
+    metadata:
+      labels:
+        app: react-deepsearch-training
+        job: react-deepsearch-training
+        component: verl-training
+    spec:
+      restartPolicy: Always
+      volumes:
+        - name: rl-training-storage
+          persistentVolumeClaim:
+            claimName: pvc-gpfshome-liuyunxin
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Gi
+        - name: wandb-config-deepsearch
+          configMap:
+            name: wandb-config-deepsearch
+            items:
+              - key: settings
+                path: settings
+      containers:
+        - name: rl-training
+          image: harbor.xa.xshixun.com:7443/hanfeigeng/agent-rl-training:app-verl0.6-transformers4.56.1-sglang0.5.2-mcore0.13.0-te2.2-v2.03
+          command: ["bash", "-c"]
+          args:
+            - |
+              echo "=========================================="
+              echo "[1/4] Initializing environment..."
+              echo "=========================================="
+              export PROMETHEUS_PORT=9090
+              echo "PROMETHEUS_PORT=${PROMETHEUS_PORT}"
+              
+              echo ""
+              echo "[2/4] Starting Ray head node..."
+              echo "Configuration:"
+              echo "  - Dashboard: 0.0.0.0:8265"
+              echo "  - Metrics Export Port: 8080"
+              echo "  - Port: 6379"
+              echo "  - Object Manager Port: 8076"
+              echo "  - CPUs: 32"
+              echo "  - GPUs: 4"
+              ray start --head --dashboard-host=0.0.0.0 --dashboard-port=8265 --metrics-export-port=8080 --port=6379 --object-manager-port=8076 --num-cpus=32 --num-gpus=4 &
+              RAY_PID=$!
+              echo "Ray head node started (PID: ${RAY_PID})"
+              
+              echo ""
+              echo "[3/4] Waiting for Ray to initialize and create Prometheus config..."
+              PROMETHEUS_CONFIG="/tmp/ray/session_latest/metrics/prometheus/prometheus.yml"
+              WAIT_COUNT=0
+              MAX_WAIT=120
+              while [ ! -f "${PROMETHEUS_CONFIG}" ]; do
+                WAIT_COUNT=$((WAIT_COUNT + 1))
+                if [ $WAIT_COUNT -ge $MAX_WAIT ]; then
+                  echo "ERROR: Timeout waiting for Prometheus config file after ${MAX_WAIT} iterations"
+                  echo "Ray may have failed to start properly"
+                  exit 1
+                fi
+                echo "  [${WAIT_COUNT}/${MAX_WAIT}] Waiting for config file: ${PROMETHEUS_CONFIG}"
+                sleep 5
+              done
+              echo "  Prometheus config file found after $((WAIT_COUNT * 5)) seconds"
+              
+              echo ""
+              echo "Starting Prometheus server..."
+              echo "  - Config: ${PROMETHEUS_CONFIG}"
+              echo "  - Listen Address: :${PROMETHEUS_PORT}"
+              echo "  - Log: prometheus.log"
+              nohup prometheus --config.file "${PROMETHEUS_CONFIG}" --web.enable-lifecycle --web.listen-address=:${PROMETHEUS_PORT} > prometheus.log 2>&1 &
+              PROMETHEUS_PID=$!
+              echo "Prometheus started successfully (PID: ${PROMETHEUS_PID})"
+              
+              echo ""
+              echo "[4/4] Starting RL training script..."
+              echo "=========================================="
+              bash scripts/rl_training/launch_configs/deepsearch_training_fast_dev.sh
+          ports:
+          - name: metrics
+            containerPort: 8080
+            protocol: TCP
+          - name: ray-dashboard
+            containerPort: 8265
+            protocol: TCP
+          - name: ray-gcs
+            containerPort: 6379
+            protocol: TCP
+          - name: rollout-metrics
+            containerPort: 9090
+            protocol: TCP
+          resources:
+            requests:
+              cpu: 64
+              memory: 512Gi
+              nvidia.com/gpu: 4
+            limits:
+              cpu: 64
+              memory: 512Gi
+              nvidia.com/gpu: 4
+          volumeMounts:
+            - name: rl-training-storage
+              mountPath: /root
+            - name: dshm
+              mountPath: /dev/shm
+            - name: wandb-config-deepsearch
+              mountPath: /root/.config/wandb/settings
+              subPath: settings
+          env:
+            - name: LOG_EVENT_TO_DB
+              value: "false"
+            - name: RAY_DISABLE_METRICS_EXPORTER
+              value: "0"
+            - name: RAY_METRICS_EXPORT_PORT
+              value: "8080"
+            - name: RAY_DASHBOARD_PORT
+              value: "8265"
+            - name: RAY_DASHBOARD_HOST
+              value: "0.0.0.0"
+            - name: WANDB_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wandb-secret
+                  key: api-key
+            - name: WANDB_BASE_URL
+              value: http://wandb-server.liuyunxin:80
+            - name: HF_HOME
+              value: "/root/.cache/huggingface/hub"
+            - name: TRANSFORMERS_CACHE
+              value: "/root/.cache/huggingface/hub"
+            - name: NO_PROXY
+              value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+            - name: no_proxy
+              value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+            - name: HF_ENDPOINT
+              value: "https://hf-mirror.com"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token-secret
+                  key: HF_TOKEN
+            - name: http_proxy
+              value: "http://192.168.3.226:7890"
+            - name: https_proxy
+              value: "http://192.168.3.226:7890"
+            - name: HTTP_PROXY
+              value: "http://192.168.3.226:7890"
+            - name: HTTPS_PROXY
+              value: "http://192.168.3.226:7890"
+            - name: APT_PROXY
+              value: "http://192.168.3.241:3142"
+            - name: PIP_INDEX_URL
+              value: "http://192.168.12.70:9181/repository/pypi-proxy/simple/"
+            - name: PIP_TRUSTED_HOST
+              value: "192.168.12.70"
+            - name: JUDGE_OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: foldagent-eval-secrets
+                  key: aliyun-key
+            - name: JUDGE_OPENAI_BASE_URL
+              value: "https://dashscope.aliyuncs.com/compatible-mode/v1/"
+            - name: JUDGE_OPENAI_URL
+              value: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+            - name: JUDGE_OPENAI_MODEL
+              value: "qwen-plus-latest"
+            - name: LOCAL_SEARCH_URL
+              value: "http://search-server.liuyunxin:8000"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: react-deepsearch-training
+  namespace: liuyunxin
+  labels:
+    app: react-deepsearch-training
+    training_job: deepsearch
+    cluster: liuyunxin
+  annotations:
+    prometheus.io/federate: "true"
+    prometheus.io/federate_port: "9090"
+spec:
+  selector:
+    app: react-deepsearch-training
+  ports:
+  - name: metrics
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  - name: ray-dashboard
+    port: 8265
+    targetPort: 8265
+    protocol: TCP
+  - name: ray-gcs
+    port: 6379
+    targetPort: 6379
+    protocol: TCP
+  - name: rollout-metrics
+    port: 9090
+    targetPort: 9090
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ray-ingress
+  namespace: liuyunxin
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: ray-liuyunxin.xa.xshixun.cn
+      http:
+        paths:
+          - path: /(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: react-deepsearch-training
+                port:
+                  number: 8265
+  tls:
+    - hosts:
+        - ray-liuyunxin.xa.xshixun.cn
+      secretName: ray-liuyunxin.xa.xshixun.cn-tls

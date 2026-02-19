@@ -1,5 +1,5 @@
 # Dockerfile for FoldAgent RL Training
-ARG BASE_IMAGE=harbor.xa.xshixun.com:7443/hanfeigeng/verl:0.10
+ARG BASE_IMAGE=harbor.xa.xshixun.com:7443/hanfeigeng/verl:sglang0.5.6
 FROM ${BASE_IMAGE}
 
 # Set working directory
@@ -8,10 +8,14 @@ WORKDIR /app
 # Job 1: Install VERL from local source
 COPY external/verl/ /app/external/verl/
 RUN pip uninstall -y verl || true && \
-    pip install --no-cache-dir -e /app/external/verl/  && \
-    pip install --no-cache-dir transformers==4.57.1 && \
+    pip install --no-cache-dir -e /app/external/verl/ && \
     pip install wandb --upgrade && \
-    pip install sqlalchemy asyncpg
+    pip install sqlalchemy asyncpg 
+
+RUN wget https://github.com/prometheus/prometheus/releases/download/v2.50.0/prometheus-2.50.0.linux-amd64.tar.gz && \
+tar xvfz prometheus-2.50.0.linux-amd64.tar.gz && \
+mv prometheus-2.50.0.linux-amd64/prometheus /usr/local/bin/ && \
+rm -rf prometheus-2.50.0.linux-amd64.tar.gz
 
 # Job 2: Copy FoldAgent directories
 COPY agents/ /app/agents/

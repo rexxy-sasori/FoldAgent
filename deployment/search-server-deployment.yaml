@@ -7,6 +7,10 @@ metadata:
     app: search-server
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0  # Ensures at least one pod is always available during updates
   selector:
     matchLabels:
       app: search-server
@@ -27,12 +31,12 @@ spec:
         resources:
           limits:
             nvidia.com/gpu: 1
-            memory: "16Gi"
-            cpu: "8"
+            memory: "32Gi"
+            cpu: "16"
           requests:
             nvidia.com/gpu: 1
-            memory: "16Gi"
-            cpu: "8"
+            memory: "32Gi"
+            cpu: "16"
         env:
         - name: NUM_GPUS
           value: "1"

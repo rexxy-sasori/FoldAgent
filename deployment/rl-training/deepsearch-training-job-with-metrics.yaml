@@ -44,11 +44,17 @@ spec:
                 path: settings
       containers:
         - name: rl-training
-          image: harbor.xa.xshixun.com:7443/hanfeigeng/agent-rl-training:app-verl0.6-transformers4.56.1-sglang0.5.2-mcore0.13.0-te2.2-v2.03
+          image: harbor.xa.xshixun.com:7443/hanfeigeng/agent-rl-training:app-verl0.6-transformers4.56.1-sglang0.5.2-mcore0.13.0-te2.2-v3.02
+          imagePullPolicy: Always
           command: ["bash", "-c"]
           args:
             - |
-              echo "=========================================="
+              # echo "=========================================="
+              # echo "[0/4] Initializing Weights & Biases logging..."
+              # echo "=========================================="
+              # python3 -c "import wandb; wandb.init(project='test_shell', mode='online')" || echo "Warning: wandb initialization failed, continuing without logging"
+              # echo "=========================================="
+              
               echo "[1/4] Initializing environment..."
               echo "=========================================="
               export PROMETHEUS_PORT=9090

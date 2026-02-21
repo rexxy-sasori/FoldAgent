@@ -33,12 +33,12 @@ class ReActAgentLoop(AgentLoopBase):
         cls.processor = processor
         cls.config = config
 
-        cls.max_turns = config.actor_rollout_ref.rollout.multi_turn.get("max_turns", 64)
-        cls.val_max_turns = config.actor_rollout_ref.rollout.multi_turn.get("val_max_turns", 200)
-        cls.session_timeout = config.actor_rollout_ref.rollout.multi_turn.get("session_timeout", 90 * 60)
-        cls.max_tool_response_length = config.actor_rollout_ref.rollout.multi_turn.get("max_tool_response_length", 1000)
-        cls.tool_response_truncate_side = config.actor_rollout_ref.rollout.multi_turn.get("tool_response_truncate_side", "right")
-        cls.enable_summary = config.actor_rollout_ref.rollout.multi_turn.get("enable_summary", False)
+        cls.max_turns = config.actor_rollout_ref.rollout.plugin.get("max_turn", 12)
+        cls.val_max_turns = config.actor_rollout_ref.rollout.plugin.get("val_max_turn", 12)
+        cls.session_timeout = config.actor_rollout_ref.rollout.plugin.get("session_timeout", 90 * 60)
+        cls.max_tool_response_length = config.actor_rollout_ref.rollout.plugin.get("max_tool_response_length", 1000)
+        cls.tool_response_truncate_side = config.actor_rollout_ref.rollout.plugin.get("tool_response_truncate_side", "right")
+        cls.enable_summary = config.actor_rollout_ref.rollout.plugin.get("enable_summary", False)
 
         cls.apply_chat_template_kwargs = config.data.get("apply_chat_template_kwargs", {})
         cls.prompt_length = config.actor_rollout_ref.rollout.prompt_length
@@ -74,11 +74,6 @@ class ReActAgentLoop(AgentLoopBase):
         image_data = kwargs.get("multi_modal_data", {}).get("image", None)
         metrics = {}
         request_id = uuid4().hex
-
-        print(f'[DEBUG AGENT] Starting ReActAgentLoop with request_id={request_id}')
-        print(f'[DEBUG AGENT] Input messages count: {len(messages)}')
-        print(f'[DEBUG AGENT] Image data: {image_data is not None}')
-        print(f'[DEBUG AGENT] Sampling params: {sampling_params}')
 
         logger.info(f"[{request_id}] Starting ReActAgentLoop")
 
@@ -119,27 +114,24 @@ class ReActAgentLoop(AgentLoopBase):
         session_start_time = asyncio.get_event_loop().time()
         init_len = len(prompt_ids)
 
-        print(f'[DEBUG AGENT] Max turns: {max_turn}, Session timeout: {self.session_timeout}s')
-        print(f'[DEBUG AGENT] Initial prompt length: {init_len} tokens')
-        print(f'[DEBUG AGENT] Response length limit: {self.response_length} tokens')
+        logger.info(f"[{request_id}] Max turns: {max_turn}, Session timeout: {self.session_timeout}s")
+        logger.info(f"[{request_id}] Initial prompt length: {init_len} tokens")
+        logger.info(f"[{request_id}] Response length limit: {self.response_length} tokens")
 
         iteration = 0
         while iteration < max_turn:
             current_time = asyncio.get_event_loop().time()
             elapsed_time = current_time - session_start_time
-            print(f'[DEBUG AGENT] Turn {iteration}: Elapsed time: {elapsed_time:.1f}s')
             
             if elapsed_time > self.session_timeout:
                 logger.info(f"[{request_id}] Session timeout after {elapsed_time:.1f}s")
-                print(f'[DEBUG AGENT] Session timeout after {elapsed_time:.1f}s')
                 break
 
             if self.enable_summary and len(prompt_ids) - init_len > self.response_length * 0.95:
                 logger.info(f"[{request_id}] Context approaching limit, summarizing")
-                print(f'[DEBUG AGENT] Context approaching limit, summarizing')
                 summary_response = await self._summarize_conversation(current_messages, request_id)
                 if summary_response is None:
-                    print(f'[DEBUG AGENT] Summary failed, breaking')
+                    logger.warning(f"[{request_id}] Summary failed, breaking")
                     break
 
                 summary_prompt = (
@@ -178,7 +170,6 @@ class ReActAgentLoop(AgentLoopBase):
 
             iteration += 1
             logger.debug(f"[{request_id}] Turn {iteration}: Generating response")
-            print(f'[DEBUG AGENT] Turn {iteration}: Generating response...')
 
             import time
             gen_start = time.time()
@@ -192,7 +183,6 @@ class ReActAgentLoop(AgentLoopBase):
             total_generation_time += gen_time
 
             logger.debug(f"[{request_id}] Turn {iteration}: Generated {len(output.token_ids)} tokens in {gen_time:.2f}s")
-            print(f'[DEBUG AGENT] Turn {iteration}: Generated {len(output.token_ids)} tokens in {gen_time:.2f}s')
 
             turn_response_ids = output.token_ids
             prompt_ids += turn_response_ids
@@ -204,54 +194,48 @@ class ReActAgentLoop(AgentLoopBase):
 
             response_text = self.tokenizer.decode(turn_response_ids, skip_special_tokens=True)
             logger.debug(f"[{request_id}] Turn {iteration}: Response text (first 200 chars): {response_text[:200]}")
-            print(f'[DEBUG AGENT] Turn {iteration}: Response text (first 500 chars): {response_text[:500]}')
 
             current_messages.append({"role": "assistant", "content": response_text})
 
             if self._check_termination(response_text):
                 logger.info(f"[{request_id}] Turn {iteration}: Termination detected")
-                print(f'[DEBUG AGENT] Turn {iteration}: Termination detected')
                 break
 
             tool_calls = self._detect_tool_calls(response_text)
             if not tool_calls:
                 logger.debug(f"[{request_id}] Turn {iteration}: No tool calls detected")
-                print(f'[DEBUG AGENT] Turn {iteration}: No tool calls detected')
                 if len(response_mask) >= self.response_length:
                     logger.info(f"[{request_id}] Response length limit reached")
-                    print(f'[DEBUG AGENT] Turn {iteration}: Response length limit reached ({len(response_mask)} >= {self.response_length})')
                     break
                 continue
 
             tool_calls_count += len(tool_calls)
             logger.info(f"[{request_id}] Turn {iteration}: Detected {len(tool_calls)} tool calls")
-            print(f'[DEBUG AGENT] Turn {iteration}: Detected {len(tool_calls)} tool calls')
 
             search_tasks = []
             for tool_call in tool_calls:
                 if tool_call["function"] == "finish":
                     logger.info(f"[{request_id}] Turn {iteration}: Finish tool detected")
-                    print(f'[DEBUG AGENT] Turn {iteration}: Finish tool detected')
                     break
 
-                print(f'[DEBUG AGENT] Turn {iteration}: Executing tool: {tool_call["function"]}')
-                print(f'[DEBUG AGENT] Turn {iteration}: Tool arguments: {tool_call["arguments"]}')
+                logger.debug(f"[{request_id}] Turn {iteration}: Executing tool: {tool_call['function']}")
+                logger.debug(f"[{request_id}] Turn {iteration}: Tool arguments: {tool_call['arguments']}")
                 search_tasks.append(self._execute_tool(tool_call, request_id))
 
             if search_tasks:
                 search_start = time.time()
-                print(f'[DEBUG AGENT] Turn {iteration}: Starting {len(search_tasks)} parallel tool executions')
+                logger.debug(f"[{request_id}] Turn {iteration}: Starting {len(search_tasks)} parallel tool executions")
                 observations = await asyncio.gather(*search_tasks)
                 search_time = time.time() - search_start
                 total_search_time += search_time
-                print(f'[DEBUG AGENT] Turn {iteration}: Completed {len(observations)} tool observations in {search_time:.2f}s')
+                logger.debug(f"[{request_id}] Turn {iteration}: Completed {len(observations)} tool observations in {search_time:.2f}s")
 
                 for i, observation in enumerate(observations):
                     observation_text = observation.get("text", f"Error: {observation.get('error', 'Unknown error')}")
                     error = observation.get("error")
-                    print(f'[DEBUG AGENT] Turn {iteration}: Observation {i}: {observation_text[:200]}')
+                    logger.debug(f"[{request_id}] Turn {iteration}: Observation {i}: {observation_text[:200]}")
                     if error:
-                        print(f'[DEBUG AGENT] Turn {iteration}: Observation {i} error: {error}')
+                        logger.debug(f"[{request_id}] Turn {iteration}: Observation {i} error: {error}")
                     
                     current_messages.append({"role": "tool", "content": observation_text})
 
@@ -290,7 +274,7 @@ class ReActAgentLoop(AgentLoopBase):
 
             if len(response_mask) >= self.response_length:
                 logger.info(f"[{request_id}] Response length limit reached")
-                print(f'[DEBUG AGENT] Turn {iteration}: Response length limit reached after tool response')
+                logger.info(f"[{request_id}] Turn {iteration}: Response length limit reached after tool response")
                 break
 
         metrics = AgentLoopMetrics(
@@ -303,10 +287,12 @@ class ReActAgentLoop(AgentLoopBase):
         final_response_mask = response_mask[: self.response_length]
 
         final_response_text = self.tokenizer.decode(final_response_ids, skip_special_tokens=True)
-        print(f'[DEBUG AGENT] Final response text (first 500 chars): {final_response_text[:500]}')
-        print(f'[DEBUG AGENT] Final response length: {len(final_response_ids)} tokens')
-        print(f'[DEBUG AGENT] Total turns: {iteration}, Total tool calls: {tool_calls_count}')
-        print(f'[DEBUG AGENT] Total generation time: {total_generation_time:.2f}s, Total search time: {total_search_time:.2f}s')
+        logger.info(f"[{request_id}] Final response length: {len(final_response_ids)} tokens")
+        logger.info(f"[{request_id}] Total turns: {iteration}, Total tool calls: {tool_calls_count}")
+        logger.info(f"[{request_id}] Total generation time: {total_generation_time:.2f}s, Total search time: {total_search_time:.2f}s")
+
+        # Determine if this rollout should be masked (True if overlong, False otherwise)
+        mask_rollout = len(final_response_ids) >= self.response_length
 
         output = AgentLoopOutput(
             prompt_ids=final_prompt_ids,
@@ -319,11 +305,11 @@ class ReActAgentLoop(AgentLoopBase):
             extra_fields={
                 "generation_time": total_generation_time,
                 "search_time": total_search_time,
+                "mask_rollout": mask_rollout,
             },
         )
 
         logger.info(f"[{request_id}] ReActAgentLoop completed: {iteration} turns, {tool_calls_count} tool calls")
-        print(f'[DEBUG AGENT] ReActAgentLoop completed with request_id={request_id}')
         return output
 
     def _check_termination(self, response_text: str) -> bool:
@@ -369,20 +355,19 @@ class ReActAgentLoop(AgentLoopBase):
         import time
         start_time = time.time()
 
-        print(f'[DEBUG AGENT] Executing search with query: {query}')
         logger.debug(f"[{request_id}] Executing search: {query}")
 
         try:
             timeout = aiohttp.ClientTimeout(total=self.search_timeout)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 payload = {"query": query, "k": 10}
-                print(f'[DEBUG AGENT] Search payload: {payload}')
+                logger.debug(f"[{request_id}] Search payload: {payload}")
                 async with session.post(f"{self.local_search_url}/search", json=payload) as response:
                     response.raise_for_status()
                     data = await response.json()
 
                     results = data.get("results", [])
-                    print(f'[DEBUG AGENT] Search returned {len(results)} results')
+                    logger.debug(f"[{request_id}] Search returned {len(results)} results")
                     formatted_results = []
                     for i, result in enumerate(results[:10]):
                         docid = result.get("docid", f"doc_{i}")
@@ -393,7 +378,6 @@ class ReActAgentLoop(AgentLoopBase):
 
                     search_time = time.time() - start_time
                     logger.info(f"[{request_id}] Search completed in {search_time:.2f}s, returned {len(results)} results")
-                    print(f'[DEBUG AGENT] Search completed in {search_time:.2f}s')
 
                     return {
                         "text": "\n".join(formatted_results),
@@ -403,19 +387,16 @@ class ReActAgentLoop(AgentLoopBase):
         except asyncio.TimeoutError:
             search_time = time.time() - start_time
             logger.error(f"[{request_id}] Search timeout after {search_time:.2f}s")
-            print(f'[DEBUG AGENT] Search timeout after {search_time:.2f}s')
             return {"text": f"Search timed out after {self.search_timeout}s", "error": "timeout", "search_time": search_time}
         except Exception as e:
             search_time = time.time() - start_time
             logger.error(f"[{request_id}] Search error: {e}")
-            print(f'[DEBUG AGENT] Search error: {e}')
             return {"text": f"Search error: {str(e)}", "error": str(e), "search_time": search_time}
 
     async def _execute_open_page(self, docid: Optional[str], url: Optional[str], request_id: str) -> dict[str, Any]:
         import time
         start_time = time.time()
 
-        print(f'[DEBUG AGENT] Opening page: docid={docid}, url={url}')
         logger.debug(f"[{request_id}] Opening page: docid={docid}, url={url}")
 
         try:
@@ -423,13 +404,13 @@ class ReActAgentLoop(AgentLoopBase):
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 if docid:
                     payload = {"docid": docid}
-                    print(f'[DEBUG AGENT] Open page payload: {payload}')
+                    logger.debug(f"[{request_id}] Open page payload: {payload}")
                     async with session.post(f"{self.local_search_url}/open", json=payload) as response:
                         response.raise_for_status()
                         data = await response.json()
                 elif url:
                     payload = {"url": url}
-                    print(f'[DEBUG AGENT] Open page payload: {payload}')
+                    logger.debug(f"[{request_id}] Open page payload: {payload}")
                     async with session.post(f"{self.local_search_url}/open", json=payload) as response:
                         response.raise_for_status()
                         data = await response.json()
@@ -437,7 +418,7 @@ class ReActAgentLoop(AgentLoopBase):
                     return {"text": "Error: Either docid or url must be provided", "error": "missing_parameter", "search_time": 0.0}
 
                 results = data.get("results", [])
-                print(f'[DEBUG AGENT] Open page returned {len(results)} results')
+                logger.debug(f"[{request_id}] Open page returned {len(results)} results")
                 if results:
                     text = results[0].get("text", "")
                     if len(text) > self.max_tool_response_length:
@@ -445,25 +426,22 @@ class ReActAgentLoop(AgentLoopBase):
                             text = text[: self.max_tool_response_length] + "\n[Document truncated.]"
                         else:
                             text = text[-self.max_tool_response_length:] + "\n[Document truncated.]"
-                    print(f'[DEBUG AGENT] Open page text (first 200 chars): {text[:200]}')
+                    logger.debug(f"[{request_id}] Open page text (first 200 chars): {text[:200]}")
                 else:
                     text = "Document not found"
-                    print(f'[DEBUG AGENT] Document not found')
+                    logger.debug(f"[{request_id}] Document not found")
 
                 search_time = time.time() - start_time
                 logger.info(f"[{request_id}] Open page completed in {search_time:.2f}s")
-                print(f'[DEBUG AGENT] Open page completed in {search_time:.2f}s')
 
                 return {"text": text, "search_time": search_time}
         except asyncio.TimeoutError:
             search_time = time.time() - start_time
             logger.error(f"[{request_id}] Open page timeout after {search_time:.2f}s")
-            print(f'[DEBUG AGENT] Open page timeout after {search_time:.2f}s')
             return {"text": f"Open page timed out after {self.search_timeout}s", "error": "timeout", "search_time": search_time}
         except Exception as e:
             search_time = time.time() - start_time
             logger.error(f"[{request_id}] Open page error: {e}")
-            print(f'[DEBUG AGENT] Open page error: {e}')
             return {"text": f"Open page error: {str(e)}", "error": str(e), "search_time": search_time}
 
     async def _summarize_conversation(self, messages: list[dict[str, str]], request_id: str) -> Optional[str]:

@@ -1,0 +1,10 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: search-server-pdb
+  namespace: liuyunxin
+spec:
+  minAvailable: 1  # Ensures at least one pod is always available
+  selector:
+    matchLabels:
+      app: search-server

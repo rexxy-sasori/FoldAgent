@@ -257,10 +257,8 @@ class ReActAgentLoop(AgentLoopBase):
         )
 
         final_prompt_ids = prompt_ids[:init_len]
-        
-        remaining_budget = max_model_len - len(final_prompt_ids)
-        final_response_ids = response_ids[: remaining_budget]
-        final_response_mask = response_mask[: remaining_budget]
+        final_response_ids = response_ids[: self.response_length]
+        final_response_mask = response_mask[: self.response_length]
 
         final_response_text = self.tokenizer.decode(final_response_ids, skip_special_tokens=True)
         print(f"[{request_id}] Final response length: {len(final_response_ids)} tokens")
@@ -274,7 +272,7 @@ class ReActAgentLoop(AgentLoopBase):
             prompt_ids=final_prompt_ids,
             response_ids=final_response_ids,
             response_mask=final_response_mask,
-            response_logprobs=response_logprobs[: remaining_budget] if response_logprobs else None,
+            response_logprobs=response_logprobs[: self.response_length] if response_logprobs else None,
             multi_modal_data={"image": image_data} if image_data is not None else {},
             num_turns=iteration,
             metrics=metrics,

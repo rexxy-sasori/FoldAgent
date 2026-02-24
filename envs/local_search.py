@@ -175,12 +175,14 @@ def extract_citations_from_response(response_text: str):
 
 
 def em_score(label: str, pred: str) -> bool:
+    if label is None or pred is None:
+        return False
     ign = {'a', 'an', 'the', 'of', 'on', 'in', 'and', '&', 'for', 'to', 'by', 'with'}
     deacc = lambda s: ''.join(c for c in unicodedata.normalize('NFKD', s) if not unicodedata.combining(c))
     def norm(s: str) -> str:
         s = deacc(s).lower()
         s = re.sub(r'\s*\([^)]*\)\s*', ' ', s)  # drop parenthetical qualifiers: (Egypt), (US), etc.
-        s = re.sub(r'[“”"\'`]+', '', s)  # drop quotes
+        s = re.sub(r'[""\'`]+', '', s)  # drop quotes
         s = re.sub(r'[:–—\-_/.,;!()?]+', ' ', s)  # unify punctuation to spaces
         s = re.sub(r'\s+', ' ', s).strip()
         return s
@@ -536,7 +538,7 @@ class LocalSearch:
         self.stats['visit_pages'] = 0
         self.env_fail = False
 
-        base_url = os.getenv("LOCAL_SEARCH_URL")
+        base_url = os.getenv("LOCAL_SEARCH_URL", "http://search-server.liuyunxin:8000")
 
         self.client = AsyncSearchClient(base_url=base_url, request_id=request_id, run_id=run_id)
         self.question = None

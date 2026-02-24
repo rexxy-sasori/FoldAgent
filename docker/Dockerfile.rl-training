@@ -10,7 +10,7 @@ COPY external/verl/ /app/external/verl/
 RUN pip uninstall -y verl || true && \
     pip install --no-cache-dir -e /app/external/verl/ && \
     pip install wandb --upgrade && \
-    pip install sqlalchemy asyncpg 
+    pip install sqlalchemy asyncpg
 
 RUN wget https://github.com/prometheus/prometheus/releases/download/v2.50.0/prometheus-2.50.0.linux-amd64.tar.gz && \
 tar xvfz prometheus-2.50.0.linux-amd64.tar.gz && \

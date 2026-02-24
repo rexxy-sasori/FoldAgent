@@ -1,0 +1,63 @@
+# Use your specific base image
+FROM harbor.xa.xshixun.com:7443/hanfeigeng/vllm/vllm-openai:v0.13.0-linux-amd64
+
+# Add Intel APT repository and install Intel MKL and other CPU optimization libraries
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends wget gnupg && \
+    wget https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB && \
+    apt-key add GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB && \
+    echo "deb https://apt.repos.intel.com/oneapi all main" > /etc/apt/sources.list.d/oneAPI.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+    intel-oneapi-mkl-devel \
+    libopenblas-dev \
+    liblapack-dev \
+    git \
+    && rm -rf /var/lib/apt/lists/* && \
+    rm -f GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
+
+# Set environment variables for optimal CPU performance
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    # MKL settings for optimal CPU performance
+    MKL_NUM_THREADS=16 \
+    OMP_NUM_THREADS=16 \
+    OPENBLAS_NUM_THREADS=16 \
+    VECLIB_MAXIMUM_THREADS=16 \
+    NUMEXPR_NUM_THREADS=16 \
+    # Disable GPU
+    CUDA_VISIBLE_DEVICES="" \
+    # Torch settings
+    TORCH_NUM_THREADS=16
+
+WORKDIR /app
+
+# Install heavy, stable dependencies first with CPU optimizations
+# This ensures that changing your local code doesn't trigger a 10-minute re-download.
+RUN pip3 install --no-cache-dir \
+    fastapi uvicorn transformers numpy pandas tqdm omegaconf \
+    torch huggingface_hub==0.36.0 sqlalchemy asyncpg \
+    psycopg2-binary aiosqlite datasets gitpython filelock \
+    intel-extension-for-pytorch \
+    onnxruntime \
+    faiss-cpu
+
+# Flash-attn is kept separate as it often requires specific build isolation settings
+# Note: For CPU, we may not need flash-attn, but keeping it in case it's needed for other parts
+RUN pip3 install flash-attn --no-build-isolation 
+
+# Install your local package, then immediately remove the source to save space
+COPY external/verl/ ./external/verl/
+RUN pip3 install ./external/verl && rm -rf ./external/verl
+
+# Copy application code last (these change most frequently)
+COPY envs/ ./envs/
+COPY agents/ ./agents/
+COPY scripts/ ./scripts/
+COPY data/ ./data/
+
+EXPOSE 8000
+
+# Use the CPU-optimized search server as the entry point
+CMD ["python3", "envs/cpu_search_server.py", "--host", "0.0.0.0", "--port", "8000"]

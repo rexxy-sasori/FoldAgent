@@ -3,6 +3,7 @@ import os
 import re
 import asyncio
 import json
+import copy
 from typing import Any, Optional, List
 from uuid import uuid4
 
@@ -15,6 +16,9 @@ from verl.experimental.agent_loop.agent_loop import (
 )
 from verl.utils.rollout_trace import rollout_trace_op
 from verl import DataProto
+
+# Import LocalSearch environment
+from envs.local_search import LocalSearch, extract_fn_call
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -47,16 +51,10 @@ class ReActAgentLoop(AgentLoopBase):
         cls.system_prompt = cls._get_system_prompt()
         cls.tool_description = cls._get_tool_description()
 
-        cls.tool_patterns = [
-            re.compile(r'<function=search>\s*<parameter=query>(.*?)</parameter>', re.DOTALL),
-            re.compile(r'<function=open_page>\s*<parameter=(?:docid|url)>(.*?)</parameter>', re.DOTALL),
-            re.compile(r'<function=finish>', re.DOTALL),
-        ]
-
+        # Use LocalSearch URL from environment
         cls.local_search_url = os.getenv("LOCAL_SEARCH_URL", "http://localhost:8000")
-        cls.search_timeout = 2.0
         
-        logger.info(f"Initialized ReActAgentLoop with LOCAL_SEARCH_URL={cls.local_search_url}, search_timeout={cls.search_timeout}s")
+        logger.info(f"Initialized ReActAgentLoop with LOCAL_SEARCH_URL={cls.local_search_url}")
 
     @classmethod
     def _get_system_prompt(cls):
@@ -68,14 +66,58 @@ class ReActAgentLoop(AgentLoopBase):
         from agents.prompts import PARALLEL_TOOL_PROMPT, search_tool, convert_tools_to_description
         return PARALLEL_TOOL_PROMPT.format(description=convert_tools_to_description(search_tool()))
 
+    def get_max_model_len(self):
+        """Helper method to get the maximum model length consistently across the class."""
+        max_model_len = getattr(self.config.actor_rollout_ref.rollout, 'max_model_len', None)
+        if max_model_len is None:
+            max_model_len = self.prompt_length + self.response_length
+        return max_model_len
+
     @rollout_trace_op
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
+        tool_description = self.__class__.tool_description
+        system_prompt = self.__class__.system_prompt + '\n\n' + tool_description
         messages = list(kwargs["raw_prompt"])
+        
+        # Check if there's already a system message in the raw_prompt
+        # If there is, replace it; otherwise, insert the new system message at the beginning
+        system_message_exists = False
+        for i, msg in enumerate(messages):
+            if msg.get("role") == "system":
+                messages[i] = {"role": "system", "content": system_prompt}
+                system_message_exists = True
+                break
+        
+        if not system_message_exists:
+            messages.insert(0, {"role": "system", "content": system_prompt})
+        
+        # print("debug messages: - input", messages)
+
         image_data = kwargs.get("multi_modal_data", {}).get("image", None)
         metrics = {}
         request_id = uuid4().hex
 
-        logger.info(f"[{request_id}] Starting ReActAgentLoop")
+        # Create LocalSearch environment instance
+        local_search_env = LocalSearch(
+            config=self.config.actor_rollout_ref.rollout,
+            tokenizer=self.tokenizer,
+            ability="LocalSearch",
+            request_id=request_id,
+            run_id=request_id
+        )
+
+        # Initialize environment with item data
+        # Extract item data from kwargs for environment initialization
+        item_data = kwargs.get("extra_info", {})
+        if item_data:
+            local_search_env.question = item_data.get("query")
+            local_search_env.label_answer = item_data.get("answer")
+            local_search_env.instance_info = copy.deepcopy(item_data)
+            if "query" in item_data:
+                local_search_env.instance_info['problem_statement'] = item_data['query']
+            logger.info(f"[{request_id}] Initialized environment with question: {local_search_env.question[:100] if local_search_env.question else 'None'}...")
+        else:
+            logger.warning(f"[{request_id}] No extra_info found in kwargs, environment not fully initialized")
 
         if self.processor is not None:
             raw_prompt = await self.loop.run_in_executor(
@@ -114,182 +156,116 @@ class ReActAgentLoop(AgentLoopBase):
         session_start_time = asyncio.get_event_loop().time()
         init_len = len(prompt_ids)
 
-        logger.info(f"[{request_id}] Max turns: {max_turn}, Session timeout: {self.session_timeout}s")
-        logger.info(f"[{request_id}] Initial prompt length: {init_len} tokens")
-        logger.info(f"[{request_id}] Response length limit: {self.response_length} tokens")
-
         iteration = 0
         while iteration < max_turn:
             current_time = asyncio.get_event_loop().time()
             elapsed_time = current_time - session_start_time
             
             if elapsed_time > self.session_timeout:
-                logger.info(f"[{request_id}] Session timeout after {elapsed_time:.1f}s")
+                print(f"[{request_id}] Session timeout after {elapsed_time:.1f}s")
                 break
 
-            if self.enable_summary and len(prompt_ids) - init_len > self.response_length * 0.95:
-                logger.info(f"[{request_id}] Context approaching limit, summarizing")
-                summary_response = await self._summarize_conversation(current_messages, request_id)
-                if summary_response is None:
-                    logger.warning(f"[{request_id}] Summary failed, breaking")
-                    break
-
-                summary_prompt = (
-                    f"For this question, you have already made the following progress in previous session, "
-                    f"summarized as follow:\n\n{summary_response}\n\nNow continue work on it."
-                )
-                current_messages = [
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": summary_prompt},
-                ]
-                if self.processor is not None:
-                    raw_prompt = await self.loop.run_in_executor(
-                        None,
-                        lambda: self.processor.apply_chat_template(
-                            current_messages,
-                            tools=None,
-                            add_generation_prompt=True,
-                            tokenize=False,
-                            **self.apply_chat_template_kwargs,
-                        ),
-                    )
-                    model_inputs = self.processor(text=[raw_prompt], images=None, return_tensors="pt")
-                    prompt_ids = model_inputs.pop("input_ids").squeeze(0).tolist()
-                else:
-                    prompt_ids = await self.loop.run_in_executor(
-                        None,
-                        lambda: self.tokenizer.apply_chat_template(
-                            current_messages,
-                            tools=None,
-                            add_generation_prompt=True,
-                            tokenize=True,
-                            **self.apply_chat_template_kwargs,
-                        ),
-                    )
-                init_len = len(prompt_ids)
-
             iteration += 1
-            logger.debug(f"[{request_id}] Turn {iteration}: Generating response")
 
             import time
             gen_start = time.time()
+            
+            # Calculate max_new_tokens to match CallAPI behavior
+            max_model_len = self.get_max_model_len()
+            max_new_tokens = max_model_len - len(prompt_ids) - 1
+            print(f"debug agent - input_length: {len(prompt_ids)}, max_model_len: {max_model_len}, max_new_tokens: {max_new_tokens}")
+            sampling_params_with_max = sampling_params.copy()
+            sampling_params_with_max['max_new_tokens'] = max_new_tokens
+            
             output = await self.server_manager.generate(
                 request_id=request_id,
                 prompt_ids=prompt_ids,
-                sampling_params=sampling_params,
+                sampling_params=sampling_params_with_max,
                 image_data=image_data,
             )
             gen_time = time.time() - gen_start
             total_generation_time += gen_time
 
-            logger.debug(f"[{request_id}] Turn {iteration}: Generated {len(output.token_ids)} tokens in {gen_time:.2f}s")
-
+            print(f"[{request_id}] Turn {iteration}: input_length: {len(prompt_ids)}, Generated {len(output.token_ids)} tokens in {gen_time:.2f}s")
+            
             turn_response_ids = output.token_ids
+            # Check if adding model response would exceed total context length
+            if len(prompt_ids) + len(turn_response_ids) > max_model_len:
+                print(f"[{request_id}] Total context length limit ({max_model_len}) reached after model response @ Turn {iteration}")
+                break
+                
             prompt_ids += turn_response_ids
-            response_ids += turn_response_ids
-            response_mask += [1] * len(turn_response_ids)
+            response_ids += turn_response_ids  
+            response_mask += [1] * len(turn_response_ids)  
 
             if output.log_probs:
                 response_logprobs += output.log_probs
 
-            response_text = self.tokenizer.decode(turn_response_ids, skip_special_tokens=True)
-            logger.debug(f"[{request_id}] Turn {iteration}: Response text (first 200 chars): {response_text[:200]}")
-
+            response_text = self.tokenizer.decode(turn_response_ids, skip_special_tokens=False)
+            
             current_messages.append({"role": "assistant", "content": response_text})
 
-            if self._check_termination(response_text):
-                logger.info(f"[{request_id}] Turn {iteration}: Termination detected")
+            fn_calls = extract_fn_call(response_text)            
+            if fn_calls is None or len(fn_calls) == 0:
+                print(f"[{request_id}] Turn {iteration}: No tool calls detected. Terminating to prevent infinite conversational loop.")
                 break
 
-            tool_calls = self._detect_tool_calls(response_text)
-            if not tool_calls:
-                logger.debug(f"[{request_id}] Turn {iteration}: No tool calls detected")
-                if len(response_mask) >= self.response_length:
-                    logger.info(f"[{request_id}] Response length limit reached")
-                    break
-                continue
-
-            tool_calls_count += len(tool_calls)
-            logger.info(f"[{request_id}] Turn {iteration}: Detected {len(tool_calls)} tool calls")
-
-            search_tasks = []
-            for tool_call in tool_calls:
-                if tool_call["function"] == "finish":
-                    logger.info(f"[{request_id}] Turn {iteration}: Finish tool detected")
-                    break
-
-                logger.debug(f"[{request_id}] Turn {iteration}: Executing tool: {tool_call['function']}")
-                logger.debug(f"[{request_id}] Turn {iteration}: Tool arguments: {tool_call['arguments']}")
-                search_tasks.append(self._execute_tool(tool_call, request_id))
-
-            if search_tasks:
-                search_start = time.time()
-                logger.debug(f"[{request_id}] Turn {iteration}: Starting {len(search_tasks)} parallel tool executions")
-                observations = await asyncio.gather(*search_tasks)
-                search_time = time.time() - search_start
-                total_search_time += search_time
-                logger.debug(f"[{request_id}] Turn {iteration}: Completed {len(observations)} tool observations in {search_time:.2f}s")
-
-                for i, observation in enumerate(observations):
-                    observation_text = observation.get("text", f"Error: {observation.get('error', 'Unknown error')}")
-                    error = observation.get("error")
-                    logger.debug(f"[{request_id}] Turn {iteration}: Observation {i}: {observation_text[:200]}")
-                    if error:
-                        logger.debug(f"[{request_id}] Turn {iteration}: Observation {i} error: {error}")
-                    
-                    current_messages.append({"role": "tool", "content": observation_text})
-
-                    if self.processor is not None:
-                        raw_tool_response = await self.loop.run_in_executor(
-                            None,
-                            lambda: self.processor.apply_chat_template(
-                                [{"role": "tool", "content": observation_text}],
-                                add_generation_prompt=True,
-                                tokenize=False,
-                                **self.apply_chat_template_kwargs,
-                            ),
-                        )
-                        model_inputs = self.processor(text=[raw_tool_response], images=None, return_tensors="pt")
-                        tool_response_ids = model_inputs.pop("input_ids").squeeze(0).tolist()
-                    else:
-                        tool_response_ids = await self.loop.run_in_executor(
-                            None,
-                            lambda: self.tokenizer.apply_chat_template(
-                                [{"role": "tool", "content": observation_text}],
-                                add_generation_prompt=True,
-                                tokenize=True,
-                            ),
-                        )
-
-                    if len(response_mask) + len(tool_response_ids) >= self.response_length:
-                        logger.info(f"[{request_id}] Response length limit reached after tool response")
-                        break
-
-                    prompt_ids += tool_response_ids
-                    response_ids += tool_response_ids
-                    response_mask += [0] * len(tool_response_ids)
-
-                    if response_logprobs:
-                        response_logprobs += [0.0] * len(tool_response_ids)
-
-            if len(response_mask) >= self.response_length:
-                logger.info(f"[{request_id}] Response length limit reached")
-                logger.info(f"[{request_id}] Turn {iteration}: Response length limit reached after tool response")
+            tool_calls_count += 1
+            fn_call = fn_calls[0]
+            if fn_call.get('function') == 'finish':
+                print(f"[{request_id}] Turn {iteration}: Finish action detected. Terminating loop.")
+                await local_search_env.run_action(response_text, request_id=request_id)
                 break
+            else:
+                print(f"[{request_id}] Turn {iteration}: Executing tool: {fn_call['function']}")
+                observation_result = await local_search_env.run_action(response_text, request_id=request_id)
+                observation_text = observation_result.get('observation', str(observation_result))
+                
+                formatted_observation = f"Tool Observation:\n{observation_text}"
+                current_messages.append({"role": "user", "content": formatted_observation})
+
+                if self.processor is not None:
+                    raw_tool_response = await self.loop.run_in_executor(
+                        None, lambda: self.processor.apply_chat_template(
+                            [{"role": "user", "content": formatted_observation}],
+                            add_generation_prompt=True, tokenize=False, **self.apply_chat_template_kwargs
+                        )
+                    )
+                    model_inputs = self.processor(text=[raw_tool_response], images=None, return_tensors="pt")
+                    tool_response_ids = model_inputs.pop("input_ids").squeeze(0).tolist()
+                else:
+                    tool_response_ids = await self.loop.run_in_executor(
+                        None, lambda: self.tokenizer.apply_chat_template(
+                            [{"role": "user", "content": formatted_observation}],
+                            add_generation_prompt=True, tokenize=True
+                        )
+                    )
+
+                if len(prompt_ids) + len(tool_response_ids) > max_model_len:
+                    print(f"[{request_id}] Context limit reached after observation @ Turn {iteration}")
+                    break
+
+                prompt_ids += tool_response_ids
+                response_ids += tool_response_ids
+                response_mask += [0] * len(tool_response_ids)
+                if response_logprobs:
+                    response_logprobs += [0.0] * len(tool_response_ids)
 
         metrics = AgentLoopMetrics(
             generate_sequences=iteration,
             tool_calls=tool_calls_count,
         )
 
-        final_prompt_ids = prompt_ids[: len(prompt_ids) - len(response_mask)]
-        final_response_ids = response_ids[: self.response_length]
-        final_response_mask = response_mask[: self.response_length]
+        final_prompt_ids = prompt_ids[:init_len]
+        
+        remaining_budget = max_model_len - len(final_prompt_ids)
+        final_response_ids = response_ids[: remaining_budget]
+        final_response_mask = response_mask[: remaining_budget]
 
         final_response_text = self.tokenizer.decode(final_response_ids, skip_special_tokens=True)
-        logger.info(f"[{request_id}] Final response length: {len(final_response_ids)} tokens")
-        logger.info(f"[{request_id}] Total turns: {iteration}, Total tool calls: {tool_calls_count}")
-        logger.info(f"[{request_id}] Total generation time: {total_generation_time:.2f}s, Total search time: {total_search_time:.2f}s")
+        print(f"[{request_id}] Final response length: {len(final_response_ids)} tokens")
+        print(f"[{request_id}] Total turns: {iteration}, Total tool calls: {tool_calls_count}")
+        print(f"[{request_id}] Total generation time: {total_generation_time:.2f}s, Total search time: {total_search_time:.2f}s")
 
         # Determine if this rollout should be masked (True if overlong, False otherwise)
         mask_rollout = len(final_response_ids) >= self.response_length
@@ -298,7 +274,7 @@ class ReActAgentLoop(AgentLoopBase):
             prompt_ids=final_prompt_ids,
             response_ids=final_response_ids,
             response_mask=final_response_mask,
-            response_logprobs=response_logprobs[: self.response_length] if response_logprobs else None,
+            response_logprobs=response_logprobs[: remaining_budget] if response_logprobs else None,
             multi_modal_data={"image": image_data} if image_data is not None else {},
             num_turns=iteration,
             metrics=metrics,
@@ -309,140 +285,17 @@ class ReActAgentLoop(AgentLoopBase):
             },
         )
 
-        logger.info(f"[{request_id}] ReActAgentLoop completed: {iteration} turns, {tool_calls_count} tool calls")
+        print(f"[{request_id}] ReActAgentLoop completed: {iteration} turns, {tool_calls_count} tool calls")
         return output
 
     def _check_termination(self, response_text: str) -> bool:
-        return "<function=finish>" in response_text
-
-    def _detect_tool_calls(self, response_text: str) -> list[dict[str, Any]]:
-        tool_calls = []
-
-        for pattern in self.tool_patterns:
-            matches = pattern.findall(response_text)
-            for match in matches:
-                if "search" in pattern.pattern:
-                    query = match.strip()
-                    tool_calls.append({"function": "search", "arguments": {"query": query}})
-                elif "open_page" in pattern.pattern:
-                    param = match.strip()
-                    if "=" in param:
-                        key, value = param.split("=", 1)
-                        tool_calls.append({"function": "open_page", "arguments": {key.strip(): value.strip()}})
-                    else:
-                        tool_calls.append({"function": "open_page", "arguments": {"docid": param.strip()}})
-                elif "finish" in pattern.pattern:
-                    tool_calls.append({"function": "finish", "arguments": {}})
-
-        return tool_calls
-
-    async def _execute_tool(self, tool_call: dict[str, Any], request_id: str) -> dict[str, Any]:
-        function_name = tool_call["function"]
-        arguments = tool_call["arguments"]
-
-        if function_name == "search":
-            return await self._execute_search(arguments.get("query", ""), request_id)
-        elif function_name == "open_page":
-            docid = arguments.get("docid")
-            url = arguments.get("url")
-            return await self._execute_open_page(docid=docid, url=url, request_id=request_id)
-        elif function_name == "finish":
-            return {"text": "Finish", "search_time": 0.0}
-        else:
-            return {"text": f"Unknown tool: {function_name}", "error": "Unknown tool", "search_time": 0.0}
-
-    async def _execute_search(self, query: str, request_id: str) -> dict[str, Any]:
-        import time
-        start_time = time.time()
-
-        logger.debug(f"[{request_id}] Executing search: {query}")
-
-        try:
-            timeout = aiohttp.ClientTimeout(total=self.search_timeout)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                payload = {"query": query, "k": 10}
-                logger.debug(f"[{request_id}] Search payload: {payload}")
-                async with session.post(f"{self.local_search_url}/search", json=payload) as response:
-                    response.raise_for_status()
-                    data = await response.json()
-
-                    results = data.get("results", [])
-                    logger.debug(f"[{request_id}] Search returned {len(results)} results")
-                    formatted_results = []
-                    for i, result in enumerate(results[:10]):
-                        docid = result.get("docid", f"doc_{i}")
-                        text = result.get("text", "")[:500]
-                        url = result.get("url", "")
-                        score = result.get("score", 0.0)
-                        formatted_results.append(f"[{docid}] {text} (URL: {url}, Score: {score:.3f})")
-
-                    search_time = time.time() - start_time
-                    logger.info(f"[{request_id}] Search completed in {search_time:.2f}s, returned {len(results)} results")
-
-                    return {
-                        "text": "\n".join(formatted_results),
-                        "search_time": search_time,
-                        "results": results,
-                    }
-        except asyncio.TimeoutError:
-            search_time = time.time() - start_time
-            logger.error(f"[{request_id}] Search timeout after {search_time:.2f}s")
-            return {"text": f"Search timed out after {self.search_timeout}s", "error": "timeout", "search_time": search_time}
-        except Exception as e:
-            search_time = time.time() - start_time
-            logger.error(f"[{request_id}] Search error: {e}")
-            return {"text": f"Search error: {str(e)}", "error": str(e), "search_time": search_time}
-
-    async def _execute_open_page(self, docid: Optional[str], url: Optional[str], request_id: str) -> dict[str, Any]:
-        import time
-        start_time = time.time()
-
-        logger.debug(f"[{request_id}] Opening page: docid={docid}, url={url}")
-
-        try:
-            timeout = aiohttp.ClientTimeout(total=self.search_timeout)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                if docid:
-                    payload = {"docid": docid}
-                    logger.debug(f"[{request_id}] Open page payload: {payload}")
-                    async with session.post(f"{self.local_search_url}/open", json=payload) as response:
-                        response.raise_for_status()
-                        data = await response.json()
-                elif url:
-                    payload = {"url": url}
-                    logger.debug(f"[{request_id}] Open page payload: {payload}")
-                    async with session.post(f"{self.local_search_url}/open", json=payload) as response:
-                        response.raise_for_status()
-                        data = await response.json()
-                else:
-                    return {"text": "Error: Either docid or url must be provided", "error": "missing_parameter", "search_time": 0.0}
-
-                results = data.get("results", [])
-                logger.debug(f"[{request_id}] Open page returned {len(results)} results")
-                if results:
-                    text = results[0].get("text", "")
-                    if len(text) > self.max_tool_response_length:
-                        if self.tool_response_truncate_side == "right":
-                            text = text[: self.max_tool_response_length] + "\n[Document truncated.]"
-                        else:
-                            text = text[-self.max_tool_response_length:] + "\n[Document truncated.]"
-                    logger.debug(f"[{request_id}] Open page text (first 200 chars): {text[:200]}")
-                else:
-                    text = "Document not found"
-                    logger.debug(f"[{request_id}] Document not found")
-
-                search_time = time.time() - start_time
-                logger.info(f"[{request_id}] Open page completed in {search_time:.2f}s")
-
-                return {"text": text, "search_time": search_time}
-        except asyncio.TimeoutError:
-            search_time = time.time() - start_time
-            logger.error(f"[{request_id}] Open page timeout after {search_time:.2f}s")
-            return {"text": f"Open page timed out after {self.search_timeout}s", "error": "timeout", "search_time": search_time}
-        except Exception as e:
-            search_time = time.time() - start_time
-            logger.error(f"[{request_id}] Open page error: {e}")
-            return {"text": f"Open page error: {str(e)}", "error": str(e), "search_time": search_time}
+        # Use the same detection method as LocalSearch
+        fn_calls = extract_fn_call(response_text)
+        if fn_calls:
+            for fn_call in fn_calls:
+                if fn_call.get('function') == 'finish':
+                    return True
+        return False
 
     async def _summarize_conversation(self, messages: list[dict[str, str]], request_id: str) -> Optional[str]:
         logger.info(f"[{request_id}] Summarizing conversation")

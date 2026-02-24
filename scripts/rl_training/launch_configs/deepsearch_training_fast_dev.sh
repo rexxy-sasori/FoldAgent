@@ -3,63 +3,6 @@
 set -e
 set -x
 
-export WANDB_API_KEY=$WANDB_API_KEY
-export WANDB_BASE_URL=$(echo "$WANDB_BASE_URL" | tr -d '`' | xargs)
-export WANDB_ENTITY=rexxy-sasori
-export WANDB_PROJECT=deepsearch_rlhf
-
-export WANDB_DIR=/root/rl-training/wandb
-export LOG_DIR=/root/rl-training/logs
-export CHECKPOINT_DIR=/root/rl-training/checkpoints
-export TRANSFORMERS_VERBOSITY=info
-export HYDRA_FULL_ERROR=1
-
-export PYTHONPATH=/app:/app/agents:/app/verl_deepsearch:$PYTHONPATH
-
-export NCCL_P2P_LEVEL=PIX
-export NCCL_P2P_DISABLE=0
-export NCCL_DEBUG=INFO
-export NCCL_IB_DISABLE=1
-export NCCL_CUMEM_ENABLE=0
-export NCCL_SHM_DISABLE=0
-export NCCL_NET_GDR_LEVEL=5
-export TOKENIZERS_PARALLELISM=true
-
-export SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1
-export SGLANG_ATTENTION_BACKEND=flashinfer
-export SGLANG_DISABLE_CUDA_GRAPH=1
-export SGLANG_ENABLE_JIT_DEEPGEMM=0
-export SGLANG_TORCH_COMPILE_MAX_BS=128
-export SGLANG_ENABLE_PREFIX_CACHING=1
-export SGLANG_WORKER_THREADS=8
-
-unset CUDA_DEVICE_MAX_CONNECTIONS
-
-export LOCAL_SEARCH_URL=${LOCAL_SEARCH_URL:-http://search-server.liuyunxin:8000}
-
-export JUDGE_OPENAI_API_KEY=${JUDGE_OPENAI_API_KEY}
-export JUDGE_OPENAI_BASE_URL=${JUDGE_OPENAI_BASE_URL:-https://lonlie.plus7.plus/v1}
-export JUDGE_OPENAI_MODEL=${JUDGE_OPENAI_MODEL:-gpt-4.1}
-export JUDGE_OPENAI_URL=${JUDGE_OPENAI_URL:-https://lonlie.plus7.plus/v1/chat/completions}
-
-mkdir -p "$WANDB_DIR"
-mkdir -p "$LOG_DIR"
-mkdir -p "$CHECKPOINT_DIR"
-
-PROMPT_LENGTH=4096
-RESPONSE_LENGTH=8192
-MAX_LENGTH=24576
-MODEL_PATH=ByteDance-Seed/Seed-OSS-36B-Instruct
-
-TRAIN_DATA_PATH=/root/rl-training/data/bc_train_with_system.parquet
-TEST_DATA_PATH=/root/rl-training/data/bc_test_with_system.parquet
-
-if [ ! -f "$TRAIN_DATA_PATH" ]; then
-  echo "Copying training data from built-in directory..."
-  mkdir -p "$(dirname "$TRAIN_DATA_PATH")"
-  cp -r /app/data/* "$(dirname "$TRAIN_DATA_PATH")/"
-fi
-
 echo "Using training data: $TRAIN_DATA_PATH"
 echo "Using LOCAL_SEARCH_URL: $LOCAL_SEARCH_URL"
 echo "Using JUDGE_OPENAI_MODEL: $JUDGE_OPENAI_MODEL"
@@ -93,7 +36,7 @@ actor_rollout_ref.rollout.multi_turn.max_assistant_turns=6 \
 +actor_rollout_ref.rollout.engine_kwargs.sglang.trust_remote_code=true \
 +actor_rollout_ref.rollout.engine_kwargs.sglang.attention_backend=flashinfer \
 actor_rollout_ref.actor.strategy="fsdp2" \
-actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=32000 \
+actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=65536 \
 actor_rollout_ref.actor.fsdp_config.forward_prefetch=True \
 actor_rollout_ref.model.enable_gradient_checkpointing=True \
 actor_rollout_ref.ref.entropy_from_logits_with_chunking=True \

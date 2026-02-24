@@ -1,0 +1,410 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wandb-config-deepsearch
+  namespace: liuyunxin
+data:
+  settings: |
+    [default]
+    base_url = http://wandb-server.liuyunxin:80
+    entity = tobi_reximillian
+    project = react_agent_training
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: react-deepsearch-training
+  namespace: liuyunxin
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: react-deepsearch-training
+  template:
+    metadata:
+      labels:
+        app: react-deepsearch-training
+        job: react-deepsearch-training
+        component: verl-training
+    spec:
+      restartPolicy: Always
+      volumes:
+        - name: rl-training-storage
+          persistentVolumeClaim:
+            claimName: pvc-gpfshome-liuyunxin
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Gi
+        - name: wandb-config-deepsearch
+          configMap:
+            name: wandb-config-deepsearch
+            items:
+              - key: settings
+                path: settings
+      containers:
+        - name: rl-training
+          image: harbor.xa.xshixun.com:7443/hanfeigeng/agent-rl-training:app-verl0.6-transformers4.56.1-sglang0.5.2-mcore0.13.0-te2.2-v3.32
+          imagePullPolicy: Always
+          command: ["bash", "-c"]
+          args:
+            - |
+              echo "=========================================="
+              echo "[0/4] Initializing Weights & Biases logging..."
+              echo "=========================================="
+              python3 -c "import wandb; wandb.init(project='test_shell', mode='online')" || echo "Warning: wandb initialization failed, continuing without logging"
+              echo "=========================================="
+              
+              echo "[1/4] Initializing environment..."
+              echo "=========================================="
+              export PROMETHEUS_PORT=9090
+              echo "PROMETHEUS_PORT=${PROMETHEUS_PORT}"
+              
+              echo ""
+              echo "[2/4] Starting Ray head node..."
+              echo "Configuration:"
+              echo "  - Dashboard: 0.0.0.0:8265"
+              echo "  - Metrics Export Port: 8080"
+              echo "  - Port: 6379"
+              echo "  - Object Manager Port: 8076"
+              echo "  - CPUs: 32"
+              echo "  - GPUs: 4"
+              ray start --head --dashboard-host=0.0.0.0 --dashboard-port=8265 --metrics-export-port=8080 --port=6379 --object-manager-port=8076 --num-cpus=64 --num-gpus=4 &
+              RAY_PID=$!
+              echo "Ray head node started (PID: ${RAY_PID})"
+              
+              echo ""
+              echo "[3/4] Waiting for Ray to initialize and create Prometheus config..."
+              PROMETHEUS_CONFIG="/tmp/ray/session_latest/metrics/prometheus/prometheus.yml"
+              WAIT_COUNT=0
+              MAX_WAIT=120
+              while [ ! -f "${PROMETHEUS_CONFIG}" ]; do
+                WAIT_COUNT=$((WAIT_COUNT + 1))
+                if [ $WAIT_COUNT -ge $MAX_WAIT ]; then
+                  echo "ERROR: Timeout waiting for Prometheus config file after ${MAX_WAIT} iterations"
+                  echo "Ray may have failed to start properly"
+                  exit 1
+                fi
+                echo "  [${WAIT_COUNT}/${MAX_WAIT}] Waiting for config file: ${PROMETHEUS_CONFIG}"
+                sleep 5
+              done
+              echo "  Prometheus config file found after $((WAIT_COUNT * 5)) seconds"
+              
+              echo ""
+              echo "Starting Prometheus server..."
+              echo "  - Config: ${PROMETHEUS_CONFIG}"
+              echo "  - Listen Address: :${PROMETHEUS_PORT}"
+              echo "  - Log: prometheus.log"
+              nohup prometheus --config.file "${PROMETHEUS_CONFIG}" --web.enable-lifecycle --web.listen-address=:${PROMETHEUS_PORT} > prometheus.log 2>&1 &
+              PROMETHEUS_PID=$!
+              echo "Prometheus started successfully (PID: ${PROMETHEUS_PID})"
+              
+              echo ""
+              echo "[4/4] Starting RL training script..."
+              echo "=========================================="
+              export WANDB_API_KEY=$WANDB_API_KEY
+              export WANDB_BASE_URL=$(echo "$WANDB_BASE_URL" | tr -d '`' | xargs)
+              export WANDB_ENTITY=rexxy-sasori
+              export WANDB_PROJECT=deepsearch_rlhf
+
+              export WANDB_DIR=/root/rl-training/wandb
+              export LOG_DIR=/root/rl-training/logs
+              export CHECKPOINT_DIR=/root/rl-training/checkpoints
+              export TRANSFORMERS_VERBOSITY=info
+              export HYDRA_FULL_ERROR=1
+
+              export PYTHONPATH=/app:/app/envs:/app/agents:/app/verl_deepsearch:$PYTHONPATH
+
+              export NCCL_P2P_DISABLE=0
+              export NCCL_DEBUG=INFO
+              export NCCL_IB_DISABLE=0
+              export NCCL_CUMEM_ENABLE=0
+              export NCCL_SHM_DISABLE=0
+              export NCCL_NET_GDR_LEVEL=2
+              export TOKENIZERS_PARALLELISM=true
+
+              export SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1
+              export SGLANG_ATTENTION_BACKEND=flashinfer
+              export SGLANG_DISABLE_CUDA_GRAPH=1
+              export SGLANG_ENABLE_JIT_DEEPGEMM=0
+              export SGLANG_TORCH_COMPILE_MAX_BS=128
+              export SGLANG_ENABLE_PREFIX_CACHING=1
+              export SGLANG_WORKER_THREADS=8
+
+              unset CUDA_DEVICE_MAX_CONNECTIONS
+
+              export LOCAL_SEARCH_URL=${LOCAL_SEARCH_URL:-http://search-server.liuyunxin:8000}
+
+              export JUDGE_OPENAI_API_KEY=${JUDGE_OPENAI_API_KEY}
+              export JUDGE_OPENAI_BASE_URL=${JUDGE_OPENAI_BASE_URL:-https://lonlie.plus7.plus/v1}
+              export JUDGE_OPENAI_MODEL=${JUDGE_OPENAI_MODEL:-gpt-4.1}
+              export JUDGE_OPENAI_URL=${JUDGE_OPENAI_URL:-https://lonlie.plus7.plus/v1/chat/completions}
+
+              mkdir -p "$WANDB_DIR"
+              mkdir -p "$LOG_DIR"
+              mkdir -p "$CHECKPOINT_DIR"
+
+              PROMPT_LENGTH=16384
+              RESPONSE_LENGTH=16384
+              MAX_LENGTH=32768
+              MODEL_PATH=ByteDance-Seed/Seed-OSS-36B-Instruct
+
+              TRAIN_DATA_PATH=/root/rl-training/data/bc_train.parquet
+              TEST_DATA_PATH=/root/rl-training/data/bc_test.parquet
+
+              if [ ! -f "$TRAIN_DATA_PATH" ]; then
+                echo "Copying training data from built-in directory..."
+                mkdir -p "$(dirname "$TRAIN_DATA_PATH")"
+                cp -r /app/data/* "$(dirname "$TRAIN_DATA_PATH")/"
+              fi
+              
+              echo "Using training data: $TRAIN_DATA_PATH"
+              echo "Using LOCAL_SEARCH_URL: $LOCAL_SEARCH_URL"
+              echo "Using JUDGE_OPENAI_MODEL: $JUDGE_OPENAI_MODEL"
+              echo "SGLang RadixAttention: ENABLED (do NOT disable for performance)"
+
+              python3 scripts/rl_training/main.py \
+              algorithm.adv_estimator=grpo \
+              algorithm.mask_overlong=False \
+              algorithm.kl_ctrl.kl_coef=0 \
+              ++algorithm.kl_penalty='none' \
+              actor_rollout_ref.actor.use_kl_loss=False \
+              actor_rollout_ref.actor.kl_loss_coef=0 \
+              ++actor_rollout_ref.actor.clip_ratio_high=0.28 \
+              ++actor_rollout_ref.actor.clip_ratio_low=0.2 \
+              actor_rollout_ref.rollout.agent.default_agent_loop=react_agent \
+              actor_rollout_ref.rollout.agent.agent_loop_config_path=/app/verl_deepsearch/deepsearch_training/configs/react_agent.yaml \
+              actor_rollout_ref.rollout.name=sglang \
+              actor_rollout_ref.rollout.mode=async \
+              actor_rollout_ref.rollout.disable_log_stats=False \
+              actor_rollout_ref.rollout.prometheus.enable=True \
+              actor_rollout_ref.rollout.calculate_log_probs=True \
+              actor_rollout_ref.rollout.enforce_eager=False \
+              actor_rollout_ref.rollout.gpu_memory_utilization=0.55 \
+              actor_rollout_ref.rollout.multi_turn.enable=True \
+              actor_rollout_ref.rollout.multi_turn.max_assistant_turns=10 \
+              +actor_rollout_ref.rollout.plugin.workflow=search \
+              +actor_rollout_ref.rollout.plugin.max_turn=10 \
+              +actor_rollout_ref.rollout.plugin.val_max_turn=10 \
+              +actor_rollout_ref.rollout.plugin.session_timeout=1200 \
+              +actor_rollout_ref.rollout.plugin.enable_summary=false \
+              +actor_rollout_ref.rollout.plugin.max_tool_response_length=1000 \
+              +actor_rollout_ref.rollout.plugin.tool_response_truncate_side=right \
+              +actor_rollout_ref.rollout.engine_kwargs.sglang.context_length=$MAX_LENGTH \
+              +actor_rollout_ref.rollout.engine_kwargs.sglang.allow_auto_truncate=true \
+              +actor_rollout_ref.rollout.engine_kwargs.sglang.max_running_requests=16 \
+              +actor_rollout_ref.rollout.engine_kwargs.sglang.chunked_prefill_size=8192 \
+              +actor_rollout_ref.rollout.engine_kwargs.sglang.trust_remote_code=true \
+              +actor_rollout_ref.rollout.engine_kwargs.sglang.attention_backend=flashinfer \
+              +actor_rollout_ref.rollout.plugin.double_check=False \
+              +actor_rollout_ref.rollout.plugin.must_search=True \
+              actor_rollout_ref.actor.fsdp_config.strategy="fsdp2" \
+              actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=65536 \
+              actor_rollout_ref.actor.fsdp_config.forward_prefetch=True \
+              actor_rollout_ref.model.enable_gradient_checkpointing=True \
+              actor_rollout_ref.model.enable_activation_offload=True \
+              actor_rollout_ref.ref.entropy_from_logits_with_chunking=True \
+              actor_rollout_ref.actor.entropy_checkpointing=True \
+              actor_rollout_ref.model.path=$MODEL_PATH \
+              actor_rollout_ref.rollout.prompt_length=$PROMPT_LENGTH \
+              actor_rollout_ref.rollout.response_length=$RESPONSE_LENGTH \
+              actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=$MAX_LENGTH \
+              actor_rollout_ref.rollout.data_parallel_size=1 \
+              actor_rollout_ref.rollout.tensor_model_parallel_size=4 \
+              actor_rollout_ref.rollout.n=4 \
+              actor_rollout_ref.rollout.agent.num_workers=16 \
+              actor_rollout_ref.actor.use_dynamic_bsz=True \
+              +actor_rollout_ref.ref.use_dynamic_bsz=True \
+              data.train_files=$TRAIN_DATA_PATH \
+              data.val_files=$TEST_DATA_PATH \
+              data.train_batch_size=32 \
+              data.max_prompt_length=$PROMPT_LENGTH \
+              data.max_response_length=$RESPONSE_LENGTH \
+              data.return_raw_chat=True \
+              +data.add_uid=True \
+              +data.val_batch_size=128 \
+              actor_rollout_ref.actor.ppo_mini_batch_size=32 \
+              critic.ppo_mini_batch_size=32 \
+              actor_rollout_ref.actor.fsdp_config.param_offload=True \
+              actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
+              actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16 \
+              actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16 \
+              actor_rollout_ref.actor.ppo_max_token_len_per_gpu=$MAX_LENGTH \
+              actor_rollout_ref.actor.ppo_infer_max_token_len_per_gpu=$MAX_LENGTH \
+              actor_rollout_ref.rollout.dtype=bfloat16 \
+              actor_rollout_ref.rollout.do_sample=True \
+              +reward_model.type=judge \
+              +reward_model.judge_openai_api_key=$JUDGE_OPENAI_API_KEY \
+              +reward_model.judge_openai_base_url=$JUDGE_OPENAI_BASE_URL \
+              +reward_model.judge_openai_model=$JUDGE_OPENAI_MODEL \
+              +reward_model.judge_openai_url=$JUDGE_OPENAI_URL \
+              +reward_model.max_retries=3 \
+              +reward_model.timeout=120 \
+              +reward_model.semaphore_limit=100 \
+              reward_model.reward_manager=judge \
+              reward_model.use_reward_loop=True \
+              +ray_kwargs.runtime_env.env_vars.PYTHONPATH=/app:/app/agents:/app/verl_deepsearch:$PYTHONPATH \
+              +ray_kwargs.runtime_env.env_vars.VERL_AUTO_PADDING=TRUE \
+              trainer.val_before_train=False \
+              trainer.val_only=False \
+              trainer.n_gpus_per_node=4 \
+              trainer.nnodes=1 \
+              trainer.total_training_steps=100 \
+              trainer.test_freq=10 \
+              trainer.save_freq=10 \
+              trainer.max_actor_ckpt_to_keep=1 \
+              trainer.max_critic_ckpt_to_keep=1 \
+              trainer.project_name=deepsearch_rlhf \
+              trainer.experiment_name=react_agent_judge_reward_fast_dev \
+              trainer.logger=[console,wandb]
+          ports:
+          - name: metrics
+            containerPort: 8080
+            protocol: TCP
+          - name: ray-dashboard
+            containerPort: 8265
+            protocol: TCP
+          - name: ray-gcs
+            containerPort: 6379
+            protocol: TCP
+          - name: rollout-metrics
+            containerPort: 9090
+            protocol: TCP
+          resources:
+            requests:
+              cpu: 64
+              memory: 1152Gi
+              nvidia.com/gpu: 4
+            limits:
+              cpu: 64
+              memory: 1152Gi
+              nvidia.com/gpu: 4
+          volumeMounts:
+            - name: rl-training-storage
+              mountPath: /root
+            - name: dshm
+              mountPath: /dev/shm
+            - name: wandb-config-deepsearch
+              mountPath: /root/.config/wandb/settings
+              subPath: settings
+          env:
+            - name: LOG_EVENT_TO_DB
+              value: "false"
+            - name: RAY_DISABLE_METRICS_EXPORTER
+              value: "0"
+            - name: RAY_METRICS_EXPORT_PORT
+              value: "8080"
+            - name: RAY_DASHBOARD_PORT
+              value: "8265"
+            - name: RAY_DASHBOARD_HOST
+              value: "0.0.0.0"
+            - name: WANDB_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wandb-secret
+                  key: api-key
+            - name: WANDB_BASE_URL
+              value: http://wandb-server.liuyunxin:80
+            - name: HF_HOME
+              value: "/root/.cache/huggingface/hub"
+            - name: TRANSFORMERS_CACHE
+              value: "/root/.cache/huggingface/hub"
+            - name: NO_PROXY
+              value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+            - name: no_proxy
+              value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+            - name: HF_ENDPOINT
+              value: "https://hf-mirror.com"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token-secret
+                  key: HF_TOKEN
+            - name: http_proxy
+              value: "http://192.168.3.226:7890"
+            - name: https_proxy
+              value: "http://192.168.3.226:7890"
+            - name: HTTP_PROXY
+              value: "http://192.168.3.226:7890"
+            - name: HTTPS_PROXY
+              value: "http://192.168.3.226:7890"
+            - name: APT_PROXY
+              value: "http://192.168.3.241:3142"
+            - name: PIP_INDEX_URL
+              value: "http://192.168.12.70:9181/repository/pypi-proxy/simple/"
+            - name: PIP_TRUSTED_HOST
+              value: "192.168.12.70"
+            - name: JUDGE_OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: foldagent-eval-secrets
+                  key: aliyun-key
+            - name: JUDGE_OPENAI_BASE_URL
+              value: "https://dashscope.aliyuncs.com/compatible-mode/v1/"
+            - name: JUDGE_OPENAI_URL
+              value: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+            - name: JUDGE_OPENAI_MODEL
+              value: "qwen-plus-latest"
+            - name: LOCAL_SEARCH_URL
+              value: "http://search-server.liuyunxin:8000"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: react-deepsearch-training
+  namespace: liuyunxin
+  labels:
+    app: react-deepsearch-training
+    training_job: deepsearch
+    cluster: liuyunxin
+  annotations:
+    prometheus.io/federate: "true"
+    prometheus.io/federate_port: "9090"
+spec:
+  selector:
+    app: react-deepsearch-training
+  ports:
+  - name: metrics
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  - name: ray-dashboard
+    port: 8265
+    targetPort: 8265
+    protocol: TCP
+  - name: ray-gcs
+    port: 6379
+    targetPort: 6379
+    protocol: TCP
+  - name: rollout-metrics
+    port: 9090
+    targetPort: 9090
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ray-ingress
+  namespace: liuyunxin
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: ray-liuyunxin.xa.xshixun.cn
+      http:
+        paths:
+          - path: /(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: react-deepsearch-training
+                port:
+                  number: 8265
+  tls:
+    - hosts:
+        - ray-liuyunxin.xa.xshixun.cn
+      secretName: ray-liuyunxin.xa.xshixun.cn-tls

@@ -152,6 +152,8 @@ async def process_item(
     # Track tool call statistics
     total_calls_count = 0
     redundant_calls_count = 0
+    # Track new session for semantic events
+    is_new_session = True
     while iteration < max_turn:
         if time.time() - session_start_time > session_timeout:
             logger.info('[SESSION] Session Timeout')
@@ -167,7 +169,7 @@ async def process_item(
             agent[current].append({'role': 'assistant', 'content': "", })
             agent[current].append({'role': 'user', 'content': summary_prompt})
             session_message.append({'role': 'user', 'content': summary_prompt})
-            response = await agent[current].step()
+            response = await agent[current].step(semantic_event='reset')
             session_message.append({'role': 'assistant', 'content': response})
             if response is None:
                 break
@@ -180,9 +182,11 @@ async def process_item(
             agent[current].append({'role': 'assistant', 'content': ""})
             agent[current].append({'role': 'user', 'content': next_session_prompt})
             session_message.append({'role': 'user', 'content': next_session_prompt})
+            is_new_session = True
 
         logger.debug(f'[REQUEST {request_id}] Calling LLM for main agent step {iteration}')
-        response = await agent['main'].step()
+        semantic_event = "start" if is_new_session else None
+        response = await agent[current].step(semantic_event=semantic_event)
         logger.debug(f'[REQUEST {request_id}] LLM response received for main agent step {iteration}: {response[:100]}...' if response else f'[REQUEST {request_id}] LLM response was None')
 
         if response is None:
@@ -379,6 +383,7 @@ async def process_item(
         # print(observation)
         agent['main'].append({'role': 'user', 'content': observation})
         session_message.append({'role': 'user', 'content': observation})
+        is_new_session = False
 
     env.stats['session_time'] = time.time() - session_start_time
     # Calculate inference time - time up to reward calculation

@@ -437,6 +437,7 @@ class CallAPI:  # Call external API
         self.tokenizer = tokenizer
         self.config = config
         self.meta_info = meta_info
+        self.session_id = None  # Track session ID
         import os
         # Check if this is a judge API call
         is_judge = agent_type == "judge" or getattr(config, "is_judge", False)
@@ -468,7 +469,7 @@ class CallAPI:  # Call external API
         )
         self.openai_url = openai_url
 
-    async def create_completion(self, input_ids, **kwargs):
+    async def create_completion(self, input_ids, semantic_event=None, **kwargs):
         max_len = kwargs.pop('max_len', None) or self.config.prompt_length + self.config.response_length
         max_tokens = min(max_len, self.config.prompt_length + self.config.response_length) - len(input_ids)
 
@@ -517,11 +518,20 @@ class CallAPI:  # Call external API
                 
                 # Use configurable track_log_prob parameter from config
                 track_log_prob = getattr(self.config.plugin, 'track_log_prob', False)
+                
+                # Build extra_body with custom parameters
+                extra_body = {}
+                if self.session_id:
+                    extra_body["session_params"] = {"id": self.session_id}
+                if semantic_event:
+                    extra_body["semantic_event"] = semantic_event
+                
                 # Use the same request_id for the API call that was logged in the request
                 response = await self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
                     max_completion_tokens=max_tokens,
+                    extra_body=extra_body if extra_body else None,
                     extra_headers={"X-Request-ID": request_id},
                     logprobs=track_log_prob,
                     top_logprobs=1 if track_log_prob else 0,
@@ -544,6 +554,17 @@ class CallAPI:  # Call external API
                 elif hasattr(response, 'headers') and 'X-Request-ID' in response.headers:
                     logger.debug(f"[CallAPI Debug] Response headers have X-Request-ID: {response.headers['X-Request-ID']}")
                     actual_request_id = response.headers['X-Request-ID']
+                
+                # Extract session ID from response metadata if available
+                returned_session_id = None
+                if hasattr(response, 'metadata') and response.metadata:
+                    returned_session_id = response.metadata.get('session_id')
+                    if returned_session_id:
+                        # Handle case where session_id is returned as a list
+                        if isinstance(returned_session_id, list):
+                            returned_session_id = returned_session_id[0] if returned_session_id else None
+                        self.session_id = returned_session_id
+                        logger.debug(f"[CallAPI Debug] Session ID returned: {self.session_id}")
                 
                 # Log response details with consistent request ID
                 # Extract cache metrics if available
@@ -839,13 +860,14 @@ class Agent(AgentContext):
         self.agent_type = agent_type
         self.agent_name = agent_name if agent_name else agent_type
 
-    async def step(self, max_new_tokens=None, retry_cjk=0):
+    async def step(self, max_new_tokens=None, retry_cjk=0, semantic_event=None):
         prompt = self.context()
         max_len = self.prompt_ids_len + self.config.response_length
         if max_new_tokens is not None:
             max_len = min(len(prompt) + max_new_tokens, 131072)
         completion = await self.llm_client.create_completion(
-            prompt, uid=self.context_uid, max_len=max_len, messages=self.chat, agent_type=self.agent_type, agent_name=self.agent_name)
+            prompt, uid=self.context_uid, max_len=max_len, messages=self.chat, agent_type=self.agent_type, agent_name=self.agent_name,
+            semantic_event=semantic_event)
         if completion is None:
             return None
         if max(self.retry_cjk, retry_cjk):
@@ -941,7 +963,8 @@ class Agent(AgentContext):
                 break
 
             iteration += 1
-            response = await self.step()
+            semantic_event = "start" if iteration == 1 else None
+            response = await self.step(semantic_event=semantic_event)
             if response is None:
                 break
 
@@ -964,7 +987,7 @@ class Agent(AgentContext):
             if self.chat[-1]['role'] == 'user':
                 self.append({'role': 'assistant', 'content': "", })
             self.append({'role': 'user', 'content': summary_prompt, })
-            last_response = await self.step(max_new_tokens=4096)
+            last_response = await self.step(max_new_tokens=4096, semantic_event="reset")
         elif last_response is None:
             last_response = str(response)
 

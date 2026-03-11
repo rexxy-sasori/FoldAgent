@@ -71,6 +71,7 @@ async def process_item(
     enable_summary = getattr(config.plugin, "enable_summary", False)
     init_len = len(agent.context())
     
+    is_new_agent = True
     while iteration < max_turn:
         # Check session timeout
         if time.time() - session_start_time > session_timeout:
@@ -84,9 +85,30 @@ async def process_item(
             agent.append({'role': 'assistant', 'content': ""})
             summary_prompt = "Please summarize the current conversation and progress so far."
             agent.append({'role': 'user', 'content': summary_prompt})
-            summary_response = await agent.step()
+            # Log summary request event
+            context_length = len(agent.context())
+            await log_event(
+                event_type='summary_request',
+                request_id=request_id,
+                run_id=run_id,
+                agent_type="react_agent",
+                context_length=context_length
+            )
+            # Send summary request with reset signal
+            summary_response = await agent.step(semantic_event="reset")
             if summary_response is None:
                 break
+            # Log summary response event
+            context_length = len(agent.context())
+            summary_length = len(summary_response) if summary_response is not None else 0
+            await log_event(
+                event_type='summary_response',
+                request_id=request_id,
+                run_id=run_id,
+                agent_type="react_agent",
+                context_length=context_length,
+                summary_length=summary_length
+            )
             # Start new session with summary
             next_session_prompt = (
                 f"For this question, you have already made the following progress in previous session, "
@@ -95,17 +117,24 @@ async def process_item(
             agent = Agent(llm_client, user_prompt, tokenizer, config, prompt_turn=prompt_turn, agent_type="react_agent")
             agent.append({'role': 'assistant', 'content': ""})
             agent.append({'role': 'user', 'content': next_session_prompt})
+            is_new_agent = True
         
         iteration += 1
         logger.debug(f'[REQUEST {request_id}] Calling LLM for step {iteration}')
-        response = await agent.step()
+        # Send semantic_event='start' on first request
+        semantic_event = "start" if is_new_agent else None
+        response = await agent.step(semantic_event=semantic_event)
         logger.debug(f'[REQUEST {request_id}] LLM response received for step {iteration}: {response[:100]}...' if response else f'[REQUEST {request_id}] LLM response was None')
         if response is None:
             break
+        # Log session ID if obtained
+        if hasattr(llm_client, 'session_id') and llm_client.session_id:
+            logger.debug(f'[REQUEST {request_id}] Session ID: {llm_client.session_id}')
         observation = await run_action(env, response, request_id=request_id)
         if observation is None:
             break
         agent.append({'role': 'user', 'content': observation})
+        is_new_agent = False
 
     logger.info(f'[REQUEST {request_id}] Task Finish, Start Reward')
     try:

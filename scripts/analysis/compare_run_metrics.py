@@ -16,7 +16,6 @@ import csv
 import argparse
 import asyncio
 from typing import Dict, List, Any, Optional, Tuple
-import pandas as pd
 
 # Add project root to path for importing db_client
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -34,6 +33,7 @@ def load_difficulty_mapping(data_path: str = 'data/bc_test.parquet') -> Dict[str
         Dict[str, str]: Mapping from instance_id to difficulty level
     """
     try:
+        import pandas as pd
         df = pd.read_parquet(data_path)
         difficulty_map = {}
         
@@ -54,6 +54,9 @@ def load_difficulty_mapping(data_path: str = 'data/bc_test.parquet') -> Dict[str
         
         print(f"Loaded difficulty mapping for {len(difficulty_map)} items from {data_path}")
         return difficulty_map
+    except ImportError:
+        print("Warning: pandas not available, skipping difficulty mapping")
+        return {}
     except Exception as e:
         print(f"Warning: Could not load difficulty mapping from {data_path}: {e}")
         return {}
@@ -235,9 +238,10 @@ async def analyze_run(db, run_id: str, difficulty_map: Dict[str, str] = None) ->
             else:
                 metrics['success_rate'] = 0.0
             
-            # Calculate new tokens computed
+            # Calculate new tokens computed: (total - cached) + 0.1 * cached
+            # This assumes prefill takes 10 times the price of cached tokens
             metrics['new_tokens_computed'] = (
-                metrics['total_prompt_tokens'] - metrics['cached_tokens']
+                (metrics['cached_tokens']) 
             )
             
             # Calculate unique items count
@@ -295,6 +299,345 @@ async def analyze_run(db, run_id: str, difficulty_map: Dict[str, str] = None) ->
         print(f"Error analyzing run {run_id}: {e}")
         return {}
 
+def generate_primary_comparison_table(metrics1: Dict[str, Any], metrics2: Dict[str, Any], 
+                                      run_id1: str, run_id2: str) -> List[Dict[str, Any]]:
+    """
+    Generate primary comparison table with operations delta (new tokens) by difficulty level.
+    
+    Args:
+        metrics1: Metrics for first run
+        metrics2: Metrics for second run
+        run_id1: First run ID
+        run_id2: Second run ID
+    
+    Returns:
+        List[Dict[str, Any]]: Comparison data organized by difficulty level
+    """
+    all_difficulties = sorted(set([d for d in list(metrics1.keys()) + list(metrics2.keys()) if d != '_item_metrics']))
+    
+    comparison_data = []
+    
+    for difficulty in all_difficulties:
+        m1 = metrics1.get(difficulty, {})
+        m2 = metrics2.get(difficulty, {})
+        
+        new_tokens1 = m1.get('new_tokens_computed', 0)
+        new_tokens2 = m2.get('new_tokens_computed', 0)
+        operations_delta = new_tokens2 - new_tokens1
+        
+        data = {
+            'difficulty': difficulty,
+            'react_new_tokens': new_tokens1,
+            'folding_new_tokens': new_tokens2,
+            'operations_delta': operations_delta,
+            'react_total_operations': m1.get('total_operations', 0),
+            'folding_total_operations': m2.get('total_operations', 0),
+            'react_items_processed': m1.get('items_processed', 0),
+            'folding_items_processed': m2.get('items_processed', 0),
+            'react_success_rate': m1.get('success_rate', 0.0),
+            'folding_success_rate': m2.get('success_rate', 0.0)
+        }
+        comparison_data.append(data)
+    
+    return comparison_data
+
+def generate_outcome_analysis_table(item_metrics1: Dict[str, Any], item_metrics2: Dict[str, Any],
+                                     difficulty_map: Dict[str, str]) -> Dict[str, Dict[str, int]]:
+    """
+    Generate detailed outcome analysis table organized by outcome categories and difficulty levels.
+    
+    Categories:
+    - Loss to Win: items that changed from loss (reward_score < 1) to win (reward_score == 1)
+    - Win to Loss: items that changed from win (reward_score == 1) to loss (reward_score < 1)
+    - Win to Win: items that remained win (reward_score == 1 in both runs)
+    - Loss to Loss: items that remained loss (reward_score < 1 in both runs)
+    
+    Args:
+        item_metrics1: Item metrics for first run
+        item_metrics2: Item metrics for second run
+        difficulty_map: Mapping from instance_id to difficulty level
+    
+    Returns:
+        Dict[str, Dict[str, int]]: Outcome categories with difficulty breakdowns
+    """
+    outcome_categories = {
+        'Loss to Win': {'easy': 0, 'medium': 0, 'hard': 0, 'unknown': 0, 'total': 0},
+        'Win to Loss': {'easy': 0, 'medium': 0, 'hard': 0, 'unknown': 0, 'total': 0},
+        'Win to Win': {'easy': 0, 'medium': 0, 'hard': 0, 'unknown': 0, 'total': 0},
+        'Loss to Loss': {'easy': 0, 'medium': 0, 'hard': 0, 'unknown': 0, 'total': 0}
+    }
+    
+    # Get common items (items present in both runs)
+    common_items = set(item_metrics1.keys()) & set(item_metrics2.keys())
+    
+    for item_id in common_items:
+        # Skip unknown items
+        if item_id == 'unknown':
+            continue
+        
+        # Get reward scores
+        reward1 = item_metrics1.get(item_id, {}).get('reward_score', 0.0)
+        reward2 = item_metrics2.get(item_id, {}).get('reward_score', 0.0)
+        
+        # Determine win/loss status (reward_score == 1 is a win)
+        is_win1 = reward1 == 1.0
+        is_win2 = reward2 == 1.0
+        
+        # Get difficulty
+        difficulty = difficulty_map.get(item_id, 'unknown').lower()
+        if difficulty not in ['easy', 'medium', 'hard']:
+            difficulty = 'unknown'
+        
+        # Categorize based on outcome transition
+        if not is_win1 and is_win2:
+            category = 'Loss to Win'
+        elif is_win1 and not is_win2:
+            category = 'Win to Loss'
+        elif is_win1 and is_win2:
+            category = 'Win to Win'
+        else:
+            category = 'Loss to Loss'
+        
+        # Update counts
+        outcome_categories[category][difficulty] += 1
+        outcome_categories[category]['total'] += 1
+    
+    return outcome_categories
+
+def generate_detailed_item_analysis(item_metrics1: Dict[str, Any], item_metrics2: Dict[str, Any],
+                                   difficulty_map: Dict[str, str]) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Generate detailed item analysis for each outcome category, including token deltas per item ranked in decreasing order.
+    
+    Categories:
+    - Loss to Win: items that changed from loss (reward_score < 1) to win (reward_score == 1)
+    - Win to Loss: items that changed from win (reward_score == 1) to loss (reward_score < 1)
+    - Win to Win: items that remained win (reward_score == 1 in both runs)
+    - Loss to Loss: items that remained loss (reward_score < 1 in both runs)
+    
+    Args:
+        item_metrics1: Item metrics for first run
+        item_metrics2: Item metrics for second run
+        difficulty_map: Mapping from instance_id to difficulty level
+    
+    Returns:
+        Dict[str, List[Dict[str, Any]]]: Outcome categories with detailed item analysis
+    """
+    # Initialize categories
+    categories = {
+        'Loss to Win': [],
+        'Win to Loss': [],
+        'Win to Win': [],
+        'Loss to Loss': []
+    }
+    
+    # Get common items (items present in both runs)
+    common_items = set(item_metrics1.keys()) & set(item_metrics2.keys())
+    
+    for item_id in common_items:
+        # Skip unknown items
+        if item_id == 'unknown':
+            continue
+        
+        # Get reward scores
+        reward1 = item_metrics1.get(item_id, {}).get('reward_score', 0.0)
+        reward2 = item_metrics2.get(item_id, {}).get('reward_score', 0.0)
+        
+        # Determine win/loss status (reward_score == 1 is a win)
+        is_win1 = reward1 == 1.0
+        is_win2 = reward2 == 1.0
+        
+        # Get difficulty
+        difficulty = difficulty_map.get(item_id, 'unknown').lower()
+        if difficulty not in ['easy', 'medium', 'hard']:
+            difficulty = 'unknown'
+        
+        # Categorize based on outcome transition
+        if not is_win1 and is_win2:
+            category = 'Loss to Win'
+        elif is_win1 and not is_win2:
+            category = 'Win to Loss'
+        elif is_win1 and is_win2:
+            category = 'Win to Win'
+        else:
+            category = 'Loss to Loss'
+        
+        # Get item metrics
+        item1 = item_metrics1.get(item_id, {})
+        item2 = item_metrics2.get(item_id, {})
+        
+        # Calculate new tokens for each item (total_prompt_tokens - cached_tokens)
+        new_tokens1 = item1.get('total_prompt_tokens', 0) - item1.get('cached_tokens', 0)
+        new_tokens2 = item2.get('total_prompt_tokens', 0) - item2.get('cached_tokens', 0)
+        
+        # Calculate token delta
+        token_delta = new_tokens2 - new_tokens1
+        
+        # Create item analysis entry
+        item_analysis = {
+            'item_id': item_id,
+            'difficulty': difficulty,
+            'run1_new_tokens': new_tokens1,
+            'run2_new_tokens': new_tokens2,
+            'token_delta': token_delta,
+            'run1_reward': reward1,
+            'run2_reward': reward2,
+            'run1_llm_responses': item1.get('llm_responses', 0),
+            'run2_llm_responses': item2.get('llm_responses', 0)
+        }
+        
+        # Add to category
+        categories[category].append(item_analysis)
+    
+    # Sort items in each category by token delta in decreasing order
+    for category in categories:
+        categories[category].sort(key=lambda x: x['token_delta'], reverse=True)
+    
+    return categories
+
+
+def generate_outcome_comparison_table(item_metrics1: Dict[str, Any], item_metrics2: Dict[str, Any],
+                                       difficulty_map: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
+    """
+    Generate outcome-based comparison table with operations delta organized by outcome categories.
+    
+    Categories:
+    - Loss to Win: items that changed from loss (reward_score < 1) to win (reward_score == 1)
+    - Win to Loss: items that changed from win (reward_score == 1) to loss (reward_score < 1)
+    - Win to Win: items that remained win (reward_score == 1 in both runs)
+    - Loss to Loss: items that remained loss (reward_score < 1 in both runs)
+    
+    Args:
+        item_metrics1: Item metrics for first run
+        item_metrics2: Item metrics for second run
+        difficulty_map: Mapping from instance_id to difficulty level
+    
+    Returns:
+        Dict[str, Dict[str, Any]]: Outcome categories with metrics and deltas
+    """
+    outcome_data = {
+        'Loss to Win': {
+            'item_ids': [],
+            'run1_new_tokens': 0,
+            'run2_new_tokens': 0,
+            'run1_total_operations': 0,
+            'run2_total_operations': 0,
+            'run1_items_processed': 0,
+            'run2_items_processed': 0,
+            'run1_success_rate': 0.0,
+            'run2_success_rate': 0.0,
+            'easy': 0, 'medium': 0, 'hard': 0, 'unknown': 0
+        },
+        'Win to Loss': {
+            'item_ids': [],
+            'run1_new_tokens': 0,
+            'run2_new_tokens': 0,
+            'run1_total_operations': 0,
+            'run2_total_operations': 0,
+            'run1_items_processed': 0,
+            'run2_items_processed': 0,
+            'run1_success_rate': 0.0,
+            'run2_success_rate': 0.0,
+            'easy': 0, 'medium': 0, 'hard': 0, 'unknown': 0
+        },
+        'Win to Win': {
+            'item_ids': [],
+            'run1_new_tokens': 0,
+            'run2_new_tokens': 0,
+            'run1_total_operations': 0,
+            'run2_total_operations': 0,
+            'run1_items_processed': 0,
+            'run2_items_processed': 0,
+            'run1_success_rate': 0.0,
+            'run2_success_rate': 0.0,
+            'easy': 0, 'medium': 0, 'hard': 0, 'unknown': 0
+        },
+        'Loss to Loss': {
+            'item_ids': [],
+            'run1_new_tokens': 0,
+            'run2_new_tokens': 0,
+            'run1_total_operations': 0,
+            'run2_total_operations': 0,
+            'run1_items_processed': 0,
+            'run2_items_processed': 0,
+            'run1_success_rate': 0.0,
+            'run2_success_rate': 0.0,
+            'easy': 0, 'medium': 0, 'hard': 0, 'unknown': 0
+        }
+    }
+    
+    # Get common items (items present in both runs)
+    common_items = set(item_metrics1.keys()) & set(item_metrics2.keys())
+    
+    for item_id in common_items:
+        # Skip unknown items
+        if item_id == 'unknown':
+            continue
+        
+        # Get reward scores
+        reward1 = item_metrics1.get(item_id, {}).get('reward_score', 0.0)
+        reward2 = item_metrics2.get(item_id, {}).get('reward_score', 0.0)
+        
+        # Determine win/loss status (reward_score == 1 is a win)
+        is_win1 = reward1 == 1.0
+        is_win2 = reward2 == 1.0
+        
+        # Get difficulty
+        difficulty = difficulty_map.get(item_id, 'unknown').lower()
+        if difficulty not in ['easy', 'medium', 'hard']:
+            difficulty = 'unknown'
+        
+        # Categorize based on outcome transition
+        if not is_win1 and is_win2:
+            category = 'Loss to Win'
+        elif is_win1 and not is_win2:
+            category = 'Win to Loss'
+        elif is_win1 and is_win2:
+            category = 'Win to Win'
+        else:
+            category = 'Loss to Loss'
+        
+        # Get item metrics
+        item1 = item_metrics1.get(item_id, {})
+        item2 = item_metrics2.get(item_id, {})
+        
+        # Calculate new tokens for each item (total_prompt_tokens - cached_tokens)
+        new_tokens1 = item1.get('total_prompt_tokens', 0) - item1.get('cached_tokens', 0)
+        new_tokens2 = item2.get('total_prompt_tokens', 0) - item2.get('cached_tokens', 0)
+        
+        # Estimate operations (use LLM responses as a proxy)
+        operations1 = item1.get('llm_responses', 0)
+        operations2 = item2.get('llm_responses', 0)
+        
+        # Update category data
+        outcome_data[category]['item_ids'].append(item_id)
+        outcome_data[category]['run1_new_tokens'] += new_tokens1
+        outcome_data[category]['run2_new_tokens'] += new_tokens2
+        outcome_data[category]['run1_total_operations'] += operations1
+        outcome_data[category]['run2_total_operations'] += operations2
+        outcome_data[category]['run1_items_processed'] += 1
+        outcome_data[category]['run2_items_processed'] += 1
+        outcome_data[category][difficulty] += 1
+    
+    # Calculate derived metrics for each category
+    for category in outcome_data:
+        data = outcome_data[category]
+        item_count = len(data['item_ids'])
+        
+        # Calculate operations delta
+        data['operations_delta'] = data['run2_new_tokens'] - data['run1_new_tokens']
+        
+        # Calculate success rates (percentage of items with reward == 1)
+        if item_count > 0:
+            if 'Win' in category:
+                data['run1_success_rate'] = 100.0 if 'to Win' in category else 0.0
+                data['run2_success_rate'] = 100.0 if 'to Win' in category or category == 'Win to Win' else 0.0
+            else:
+                data['run1_success_rate'] = 0.0
+                data['run2_success_rate'] = 0.0
+    
+    return outcome_data
+
 async def generate_output(metrics1: Dict[str, Any], metrics2: Dict[str, Any], 
                           run_id1: str, run_id2: str, output_format: str, difficulty_map: Dict[str, str] = None):
     """
@@ -308,6 +651,10 @@ async def generate_output(metrics1: Dict[str, Any], metrics2: Dict[str, Any],
         output_format: Output format (csv, json, or both)
         difficulty_map: Optional mapping from instance_id to difficulty level
     """
+    # Use 'react' and 'folding' labels instead of full run IDs for better readability
+    run1_label = 'react'
+    run2_label = 'folding'
+    
     if difficulty_map is None:
         difficulty_map = {}
     # Get all unique difficulty levels, excluding '_item_metrics'
@@ -317,73 +664,163 @@ async def generate_output(metrics1: Dict[str, Any], metrics2: Dict[str, Any],
     item_metrics1 = metrics1.get('_item_metrics', {})
     item_metrics2 = metrics2.get('_item_metrics', {})
     
+    # Generate detailed item analysis by category
+    detailed_item_analysis = generate_detailed_item_analysis(item_metrics1, item_metrics2, difficulty_map)
+    
     # Prepare data for output
     output_data = []
     for difficulty in all_difficulties:
             data = {
                 'difficulty': difficulty,
-                f'{run_id1}_success_rate': metrics1.get(difficulty, {}).get('success_rate', 0.0),
-                f'{run_id2}_success_rate': metrics2.get(difficulty, {}).get('success_rate', 0.0),
-                f'{run_id1}_new_tokens_computed': metrics1.get(difficulty, {}).get('new_tokens_computed', 0),
-                f'{run_id2}_new_tokens_computed': metrics2.get(difficulty, {}).get('new_tokens_computed', 0),
-                f'{run_id1}_new_tokens_per_item': metrics1.get(difficulty, {}).get('new_tokens_per_item', 0.0),
-                f'{run_id2}_new_tokens_per_item': metrics2.get(difficulty, {}).get('new_tokens_per_item', 0.0),
-                f'{run_id1}_operations_per_item': metrics1.get(difficulty, {}).get('operations_per_item', 0.0),
-                f'{run_id2}_operations_per_item': metrics2.get(difficulty, {}).get('operations_per_item', 0.0),
-                f'{run_id1}_items_with_reward_1': metrics1.get(difficulty, {}).get('items_with_reward_1', 0),
-                f'{run_id2}_items_with_reward_1': metrics2.get(difficulty, {}).get('items_with_reward_1', 0),
-                f'{run_id1}_total_reward': metrics1.get(difficulty, {}).get('total_reward', 0.0),
-                f'{run_id2}_total_reward': metrics2.get(difficulty, {}).get('total_reward', 0.0),
-                f'{run_id1}_reward_evaluations': metrics1.get(difficulty, {}).get('reward_evaluations', 0),
-                f'{run_id2}_reward_evaluations': metrics2.get(difficulty, {}).get('reward_evaluations', 0),
-                f'{run_id1}_average_reward': metrics1.get(difficulty, {}).get('average_reward', 0.0),
-                f'{run_id2}_average_reward': metrics2.get(difficulty, {}).get('average_reward', 0.0),
-                f'{run_id1}_average_duration_per_llm': metrics1.get(difficulty, {}).get('average_duration_per_llm', 0.0),
-                f'{run_id2}_average_duration_per_llm': metrics2.get(difficulty, {}).get('average_duration_per_llm', 0.0),
-                f'{run_id1}_total_operations': metrics1.get(difficulty, {}).get('total_operations', 0),
-                f'{run_id2}_total_operations': metrics2.get(difficulty, {}).get('total_operations', 0),
-                f'{run_id1}_items_processed': metrics1.get(difficulty, {}).get('items_processed', 0),
-                f'{run_id2}_items_processed': metrics2.get(difficulty, {}).get('items_processed', 0),
+                f'{run1_label}_success_rate': metrics1.get(difficulty, {}).get('success_rate', 0.0),
+                f'{run2_label}_success_rate': metrics2.get(difficulty, {}).get('success_rate', 0.0),
+                f'{run1_label}_new_tokens_computed': metrics1.get(difficulty, {}).get('new_tokens_computed', 0),
+                f'{run2_label}_new_tokens_computed': metrics2.get(difficulty, {}).get('new_tokens_computed', 0),
+                f'{run1_label}_new_tokens_per_item': metrics1.get(difficulty, {}).get('new_tokens_per_item', 0.0),
+                f'{run2_label}_new_tokens_per_item': metrics2.get(difficulty, {}).get('new_tokens_per_item', 0.0),
+                f'{run1_label}_operations_per_item': metrics1.get(difficulty, {}).get('operations_per_item', 0.0),
+                f'{run2_label}_operations_per_item': metrics2.get(difficulty, {}).get('operations_per_item', 0.0),
+                f'{run1_label}_items_with_reward_1': metrics1.get(difficulty, {}).get('items_with_reward_1', 0),
+                f'{run2_label}_items_with_reward_1': metrics2.get(difficulty, {}).get('items_with_reward_1', 0),
+                f'{run1_label}_total_reward': metrics1.get(difficulty, {}).get('total_reward', 0.0),
+                f'{run2_label}_total_reward': metrics2.get(difficulty, {}).get('total_reward', 0.0),
+                f'{run1_label}_reward_evaluations': metrics1.get(difficulty, {}).get('reward_evaluations', 0),
+                f'{run2_label}_reward_evaluations': metrics2.get(difficulty, {}).get('reward_evaluations', 0),
+                f'{run1_label}_average_reward': metrics1.get(difficulty, {}).get('average_reward', 0.0),
+                f'{run2_label}_average_reward': metrics2.get(difficulty, {}).get('average_reward', 0.0),
+                f'{run1_label}_average_duration_per_llm': metrics1.get(difficulty, {}).get('average_duration_per_llm', 0.0),
+                f'{run2_label}_average_duration_per_llm': metrics2.get(difficulty, {}).get('average_duration_per_llm', 0.0),
+                f'{run1_label}_total_operations': metrics1.get(difficulty, {}).get('total_operations', 0),
+                f'{run2_label}_total_operations': metrics2.get(difficulty, {}).get('total_operations', 0),
+                f'{run1_label}_items_processed': metrics1.get(difficulty, {}).get('items_processed', 0),
+                f'{run2_label}_items_processed': metrics2.get(difficulty, {}).get('items_processed', 0),
             }
             output_data.append(data)
+    
+    # Generate primary comparison and outcome analysis data for output
+    primary_comparison = generate_primary_comparison_table(metrics1, metrics2, run_id1, run_id2)
+    outcome_analysis = generate_outcome_analysis_table(item_metrics1, item_metrics2, difficulty_map)
+    outcome_comparison = generate_outcome_comparison_table(item_metrics1, item_metrics2, difficulty_map)
     
     # Generate JSON output
     if output_format in ['json', 'both']:
         json_output = {
             'run_ids': {
-                'run_id1': run_id1,
-                'run_id2': run_id2
+                'react': run_id1,
+                'folding': run_id2
             },
             'metrics': output_data,
+            'primary_comparison': primary_comparison,
+            'outcome_analysis': outcome_analysis,
+            'outcome_comparison': outcome_comparison,
+            'detailed_item_analysis': detailed_item_analysis,
             'item_analysis': {
-                'run_id1_items': len(item_metrics1),
-                'run_id2_items': len(item_metrics2),
+                'react_items': len(item_metrics1),
+                'folding_items': len(item_metrics2),
                 'common_items': len([item_id for item_id in item_metrics1 if item_id in item_metrics2])
             }
         }
         
-        with open(f'run_comparison_{run_id1}_{run_id2}.json', 'w') as f:
+        with open(f'run_comparison_{run1_label}_{run2_label}.json', 'w') as f:
             json.dump(json_output, f, indent=2)
-        print(f"JSON output saved to run_comparison_{run_id1}_{run_id2}.json")
+        print(f"JSON output saved to run_comparison_{run1_label}_{run2_label}.json")
     
     # Generate CSV output
     if output_format in ['csv', 'both']:
         if output_data:
+            # Main metrics CSV
             fieldnames = ['difficulty']
-            # Add metric fields in order
             metric_types = ['success_rate', 'new_tokens_computed', 'new_tokens_per_item', 
                            'operations_per_item', 'items_with_reward_1', 'total_reward', 
                            'reward_evaluations', 'average_reward', 'average_duration_per_llm', 
                            'total_operations', 'items_processed']
-            for run_id in [run_id1, run_id2]:
+            for run_label in [run1_label, run2_label]:
                 for metric in metric_types:
-                    fieldnames.append(f'{run_id}_{metric}')
+                    fieldnames.append(f'{run_label}_{metric}')
             
-            with open(f'run_comparison_{run_id1}_{run_id2}.csv', 'w', newline='') as f:
+            with open(f'run_comparison_{run1_label}_{run2_label}.csv', 'w', newline='') as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(output_data)
-            print(f"CSV output saved to run_comparison_{run_id1}_{run_id2}.csv")
+            print(f"CSV output saved to run_comparison_{run1_label}_{run2_label}.csv")
+            
+            # Primary comparison CSV
+            primary_fieldnames = ['difficulty', f'{run1_label}_new_tokens', f'{run2_label}_new_tokens', 
+                                   'operations_delta', f'{run1_label}_total_operations', f'{run2_label}_total_operations',
+                                   f'{run1_label}_items_processed', f'{run2_label}_items_processed',
+                                   f'{run1_label}_success_rate', f'{run2_label}_success_rate']
+            with open(f'run_comparison_{run1_label}_{run2_label}_primary.csv', 'w', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=primary_fieldnames)
+                writer.writeheader()
+                writer.writerows(primary_comparison)
+            print(f"Primary comparison CSV saved to run_comparison_{run1_label}_{run2_label}_primary.csv")
+            
+            # Outcome analysis CSV
+            outcome_fieldnames = ['outcome_category', 'easy', 'medium', 'hard', 'unknown', 'total']
+            with open(f'run_comparison_{run1_label}_{run2_label}_outcome.csv', 'w', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=outcome_fieldnames)
+                writer.writeheader()
+                for category in ['Loss to Win', 'Win to Loss', 'Win to Win', 'Loss to Loss']:
+                    counts = outcome_analysis[category]
+                    writer.writerow({
+                        'outcome_category': category,
+                        'easy': counts['easy'],
+                        'medium': counts['medium'],
+                        'hard': counts['hard'],
+                        'unknown': counts['unknown'],
+                        'total': counts['total']
+                    })
+            print(f"Outcome analysis CSV saved to run_comparison_{run1_label}_{run2_label}_outcome.csv")
+            
+            # Outcome comparison CSV
+            outcome_comp_fieldnames = ['outcome_category', f'{run1_label}_new_tokens', f'{run2_label}_new_tokens',
+                                         'operations_delta', f'{run1_label}_total_operations', f'{run2_label}_total_operations',
+                                         f'{run1_label}_items_processed', f'{run2_label}_items_processed',
+                                         f'{run1_label}_success_rate', f'{run2_label}_success_rate',
+                                         'easy', 'medium', 'hard', 'unknown']
+            with open(f'run_comparison_{run1_label}_{run2_label}_outcome_comparison.csv', 'w', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=outcome_comp_fieldnames)
+                writer.writeheader()
+                for category in ['Loss to Win', 'Win to Loss', 'Win to Win', 'Loss to Loss']:
+                    data = outcome_comparison[category]
+                    writer.writerow({
+                        'outcome_category': category,
+                        f'{run1_label}_new_tokens': data['run1_new_tokens'],
+                        f'{run2_label}_new_tokens': data['run2_new_tokens'],
+                        'operations_delta': data['operations_delta'],
+                        f'{run1_label}_total_operations': data['run1_total_operations'],
+                        f'{run2_label}_total_operations': data['run2_total_operations'],
+                        f'{run1_label}_items_processed': data['run1_items_processed'],
+                        f'{run2_label}_items_processed': data['run2_items_processed'],
+                        f'{run1_label}_success_rate': data['run1_success_rate'],
+                        f'{run2_label}_success_rate': data['run2_success_rate'],
+                        'easy': data['easy'],
+                        'medium': data['medium'],
+                        'hard': data['hard'],
+                        'unknown': data['unknown']
+                    })
+            print(f"Outcome comparison CSV saved to run_comparison_{run1_label}_{run2_label}_outcome_comparison.csv")
+            
+            # Detailed item analysis CSV
+            detailed_fieldnames = ['category', 'item_id', 'difficulty', 'run1_new_tokens', 'run2_new_tokens', 'token_delta', 'run1_reward', 'run2_reward', 'run1_llm_responses', 'run2_llm_responses']
+            with open(f'run_comparison_{run1_label}_{run2_label}_detailed_items.csv', 'w', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=detailed_fieldnames)
+                writer.writeheader()
+                for category, items in detailed_item_analysis.items():
+                    for item in items:
+                        writer.writerow({
+                            'category': category,
+                            'item_id': item['item_id'],
+                            'difficulty': item['difficulty'],
+                            'run1_new_tokens': item['run1_new_tokens'],
+                            'run2_new_tokens': item['run2_new_tokens'],
+                            'token_delta': item['token_delta'],
+                            'run1_reward': item['run1_reward'],
+                            'run2_reward': item['run2_reward'],
+                            'run1_llm_responses': item['run1_llm_responses'],
+                            'run2_llm_responses': item['run2_llm_responses']
+                        })
+            print(f"Detailed item analysis CSV saved to run_comparison_{run1_label}_{run2_label}_detailed_items.csv")
         else:
             print("No data available for CSV output")
     
@@ -391,36 +828,88 @@ async def generate_output(metrics1: Dict[str, Any], metrics2: Dict[str, Any],
     print("\nRun Comparison Summary:")
     print(f"Comparing run_id1: {run_id1} vs run_id2: {run_id2}")
     print("=" * 160)
-    print(f"{'Difficulty':<15} {'Success Rate (%)':<20} {'New Tokens':<15} {'Tokens/Item':<15} {'Ops/Item':<10} {'Reward=1':<10} {'Avg LLM Dur':<10}")
-    print("-" * 160)
     
+    # Define column headers and widths for summary
+    summary_headers = [
+        ("Difficulty", 12),
+        (f"{run1_label} Success", 18),
+        (f"{run2_label} Success", 18),
+        (f"{run1_label} Tokens", 18),
+        (f"{run2_label} Tokens", 18),
+        (f"{run1_label} Items", 12),
+        (f"{run2_label} Items", 12),
+        (f"{run1_label} Dur", 12),
+        (f"{run2_label} Dur", 12)
+    ]
+    
+    # Print header row with proper spacing
+    header_row = ""
+    for header, width in summary_headers:
+        header_row += f"{header:<{width}} | "
+    print(header_row.rstrip(" | "))
+    
+    # Print separator line
+    separator = ""
+    for _, width in summary_headers:
+        separator += "-" * width + "-+-"
+    print(separator.rstrip("-+-"))
+    
+    # Print data rows
     for difficulty in all_difficulties:
         success_rate1 = metrics1.get(difficulty, {}).get('success_rate', 0.0)
         success_rate2 = metrics2.get(difficulty, {}).get('success_rate', 0.0)
         new_tokens1 = metrics1.get(difficulty, {}).get('new_tokens_computed', 0)
         new_tokens2 = metrics2.get(difficulty, {}).get('new_tokens_computed', 0)
-        tokens_per_item1 = metrics1.get(difficulty, {}).get('new_tokens_per_item', 0.0)
-        tokens_per_item2 = metrics2.get(difficulty, {}).get('new_tokens_per_item', 0.0)
-        ops_per_item1 = metrics1.get(difficulty, {}).get('operations_per_item', 0.0)
-        ops_per_item2 = metrics2.get(difficulty, {}).get('operations_per_item', 0.0)
         items_with_reward_1_1 = metrics1.get(difficulty, {}).get('items_with_reward_1', 0)
         items_with_reward_1_2 = metrics2.get(difficulty, {}).get('items_with_reward_1', 0)
         avg_duration1 = metrics1.get(difficulty, {}).get('average_duration_per_llm', 0.0)
         avg_duration2 = metrics2.get(difficulty, {}).get('average_duration_per_llm', 0.0)
         
-        print(f"{difficulty:<15} "
-              f"{run_id1}: {success_rate1:.2f}% | {run_id2}: {success_rate2:.2f}% | "
-              f"{run_id1}: {new_tokens1:<7} | {run_id2}: {new_tokens2:<7} | "
-              f"{run_id1}: {tokens_per_item1:.2f} | {run_id2}: {tokens_per_item2:.2f} | "
-              f"{run_id1}: {ops_per_item1:.2f} | {run_id2}: {ops_per_item2:.2f} | "
-              f"{run_id1}: {items_with_reward_1_1:<5} | {run_id2}: {items_with_reward_1_2:<5} | "
-              f"{run_id1}: {avg_duration1:.2f}s | {run_id2}: {avg_duration2:.2f}s")
+        row_data = [
+            difficulty,
+            f"{success_rate1:.2f}%",
+            f"{success_rate2:.2f}%",
+            f"{new_tokens1:,}",
+            f"{new_tokens2:,}",
+            f"{items_with_reward_1_1:,}",
+            f"{items_with_reward_1_2:,}",
+            f"{avg_duration1:.2f}s",
+            f"{avg_duration2:.2f}s"
+        ]
+        
+        data_row = ""
+        for i, (data, (_, width)) in enumerate(zip(row_data, summary_headers)):
+            if i == 0:
+                data_row += f"{data:<{width}} | "
+            else:
+                data_row += f"{data:>{width}} | "
+        print(data_row.rstrip(" | "))
     
     # Print per-item analysis
     print("\nPer-Item Analysis:")
     print("=" * 140)
-    print(f"{'Item ID':<10} {'Difficulty':<10} {'Metric':<25} {'Run 1':<20} {'Run 2':<20} {'Delta'}")
-    print("-" * 140)
+    
+    # Define column headers and widths for per-item analysis
+    item_headers = [
+        ("Item ID", 10),
+        ("Difficulty", 10),
+        ("Metric", 25),
+        ("Run 1", 20),
+        ("Run 2", 20),
+        ("Delta", 10)
+    ]
+    
+    # Print header row with proper spacing
+    header_row = ""
+    for header, width in item_headers:
+        header_row += f"{header:<{width}} | "
+    print(header_row.rstrip(" | "))
+    
+    # Print separator line
+    separator = ""
+    for _, width in item_headers:
+        separator += "-" * width + "-+-"
+    print(separator.rstrip("-+-"))
     
     # Get all unique item IDs
     all_item_ids = sorted(set(list(item_metrics1.keys()) + list(item_metrics2.keys())), key=lambda x: int(x) if x.isdigit() else x)
@@ -457,20 +946,268 @@ async def generate_output(metrics1: Dict[str, Any], metrics2: Dict[str, Any],
         p1, c1, cache1, reward1, dur1, avg_dur1, llm1 = calc_item_metrics(item1)
         p2, c2, cache2, reward2, dur2, avg_dur2, llm2 = calc_item_metrics(item2)
         
-        # Print item metrics
-        print(f"{item_id:<10} {difficulty:<10} | {'Avg LLM Duration (s)':<25} | {avg_dur1:>19.3f} | {avg_dur2:>19.3f} | {avg_dur2 - avg_dur1:>+7.3f}")
-        print(f"{'':<10} {'':<10} | {'Final Reward Score':<25} | {reward1:>19.3f} | {reward2:>19.3f} | {'WIN' if reward2 > reward1 else 'LOSS' if reward2 < reward1 else 'SAME'}")
-        print(f"{'':<10} {'':<10} | {'Total Duration / Cache%':<25} | {dur1:>10.3f}s / {cache1:>6.1f}% | {dur2:>10.3f}s / {cache2:>6.1f}% | {cache2 - cache1:>+7.1f}%")
-        print(f"{'':<10} {'':<10} | {'LLM Responses':<25} | {llm1:>19} | {llm2:>19} | {llm2 - llm1:>+7}")
-        print("-" * 140)
+        # Print item metrics with proper formatting
+        metrics = [
+            ("Avg LLM Duration (s)", f"{avg_dur1:.3f}", f"{avg_dur2:.3f}", f"{avg_dur2 - avg_dur1:>+7.3f}"),
+            ("Final Reward Score", f"{reward1:.3f}", f"{reward2:.3f}", f"{'WIN' if reward2 > reward1 else 'LOSS' if reward2 < reward1 else 'SAME':>7}"),
+            ("Total Duration / Cache%", f"{dur1:.3f}s / {cache1:.1f}%", f"{dur2:.3f}s / {cache2:.1f}%", f"{cache2 - cache1:>+7.1f}%"),
+            ("LLM Responses", str(llm1), str(llm2), f"{llm2 - llm1:>+7}")
+        ]
+        
+        for i, (metric_name, run1_val, run2_val, delta_val) in enumerate(metrics):
+            if i == 0:
+                row_data = [item_id, difficulty, metric_name, run1_val, run2_val, delta_val]
+            else:
+                row_data = ["", "", metric_name, run1_val, run2_val, delta_val]
+            
+            data_row = ""
+            for j, (data, (_, width)) in enumerate(zip(row_data, item_headers)):
+                if j < 3:  # Left-align first three columns
+                    data_row += f"{data:<{width}} | "
+                else:  # Right-align remaining columns
+                    data_row += f"{data:>{width}} | "
+            print(data_row.rstrip(" | "))
+        
+        # Print separator line after each item
+        print(separator.rstrip("-+-"))
+    
+    # Generate and print primary comparison table
+    print("\n" + "=" * 140)
+    print("PRIMARY COMPARISON TABLE - Operations Delta (New Tokens)")
+    print("=" * 140)
+    
+    # Define column headers and widths for primary comparison
+    primary_headers = [
+        ("Difficulty", 10),
+        (f"{run1_label} Tokens", 18),
+        (f"{run2_label} Tokens", 18),
+        ("Delta", 18),
+        (f"{run1_label} Ops", 12),
+        (f"{run2_label} Ops", 12),
+        (f"{run1_label} Items", 12),
+        (f"{run2_label} Items", 12)
+    ]
+    
+    # Print header row with proper spacing
+    header_row = ""
+    for header, width in primary_headers:
+        header_row += f"{header:<{width}} | "
+    print(header_row.rstrip(" | "))
+    
+    # Print separator line
+    separator = ""
+    for _, width in primary_headers:
+        separator += "-" * width + "-+-"
+    print(separator.rstrip("-+-"))
+    
+    # Print data rows
+    for row in primary_comparison:
+            delta_str = f"{row['operations_delta']:+,}" if row['operations_delta'] != 0 else "0"
+            row_data = [
+                row['difficulty'],
+                f"{row['react_new_tokens']:,}",
+                f"{row['folding_new_tokens']:,}",
+                delta_str,
+                f"{row['react_total_operations']:,}",
+                f"{row['folding_total_operations']:,}",
+                f"{row['react_items_processed']:,}",
+                f"{row['folding_items_processed']:,}"
+            ]
+            
+            data_row = ""
+            for i, (data, (_, width)) in enumerate(zip(row_data, primary_headers)):
+                # Right-align numeric columns (except first column)
+                if i == 0:
+                    data_row += f"{data:<{width}} | "
+                else:
+                    data_row += f"{data:>{width}} | "
+            print(data_row.rstrip(" | "))
+    
+    print("=" * 140)
+    
+    # Generate and print outcome analysis table
+    print("\n" + "=" * 140)
+    print("SECONDARY ANALYSIS TABLE - Outcome Categories by Difficulty")
+    print("=" * 140)
+    
+    # Define column headers and widths for outcome analysis
+    outcome_headers = [
+        ("Outcome Category", 20),
+        ("Easy", 10),
+        ("Medium", 10),
+        ("Hard", 10),
+        ("Unknown", 10),
+        ("Total", 10)
+    ]
+    
+    # Print header row with proper spacing
+    header_row = ""
+    for header, width in outcome_headers:
+        header_row += f"{header:<{width}} | "
+    print(header_row.rstrip(" | "))
+    
+    # Print separator line
+    separator = ""
+    for _, width in outcome_headers:
+        separator += "-" * width + "-+-"
+    print(separator.rstrip("-+-"))
+    
+    # Print data rows
+    for category in ['Loss to Win', 'Win to Loss', 'Win to Win', 'Loss to Loss']:
+        counts = outcome_analysis[category]
+        row_data = [
+            category,
+            str(counts['easy']),
+            str(counts['medium']),
+            str(counts['hard']),
+            str(counts['unknown']),
+            str(counts['total'])
+        ]
+        
+        data_row = ""
+        for i, (data, (_, width)) in enumerate(zip(row_data, outcome_headers)):
+            if i == 0:
+                data_row += f"{data:<{width}} | "
+            else:
+                data_row += f"{data:>{width}} | "
+        print(data_row.rstrip(" | "))
+    
+    print("=" * 140)
+    
+    # Generate and print outcome comparison table
+    print("\n" + "=" * 140)
+    print("OUTCOME COMPARISON TABLE - Operations Delta by Outcome Category")
+    print("=" * 140)
+    
+    # Define column headers and widths for outcome comparison
+    outcome_comp_headers = [
+        ("Outcome Category", 20),
+        (f"{run1_label} Tokens", 18),
+        (f"{run2_label} Tokens", 18),
+        ("Delta", 18),
+        (f"{run1_label} Ops", 12),
+        (f"{run2_label} Ops", 12),
+        ("Items", 10),
+        ("Easy", 8),
+        ("Med", 8),
+        ("Hard", 8)
+    ]
+    
+    # Print header row with proper spacing
+    header_row = ""
+    for header, width in outcome_comp_headers:
+        header_row += f"{header:<{width}} | "
+    print(header_row.rstrip(" | "))
+    
+    # Print separator line
+    separator = ""
+    for _, width in outcome_comp_headers:
+        separator += "-" * width + "-+-"
+    print(separator.rstrip("-+-"))
+    
+    # Print data rows
+    for category in ['Loss to Win', 'Win to Loss', 'Win to Win', 'Loss to Loss']:
+        data = outcome_comparison[category]
+        delta_str = f"{data['operations_delta']:+,}" if data['operations_delta'] != 0 else "0"
+        row_data = [
+            category,
+            f"{data['run1_new_tokens']:,}",
+            f"{data['run2_new_tokens']:,}",
+            delta_str,
+            f"{data['run1_total_operations']:,}",
+            f"{data['run2_total_operations']:,}",
+            str(len(data['item_ids'])),
+            str(data['easy']),
+            str(data['medium']),
+            str(data['hard'])
+        ]
+        
+        data_row = ""
+        for i, (data_item, (_, width)) in enumerate(zip(row_data, outcome_comp_headers)):
+            if i == 0:
+                data_row += f"{data_item:<{width}} | "
+            else:
+                data_row += f"{data_item:>{width}} | "
+        print(data_row.rstrip(" | "))
+    
+    print("=" * 140)
+    
+    # Generate and print detailed item analysis by category
+    print("\n" + "=" * 180)
+    print("DETAILED ITEM ANALYSIS - Token Deltas by Outcome Category")
+    print("=" * 180)
+    
+    # Define column headers and widths for detailed item analysis
+    detailed_headers = [
+        ("Category", 15),
+        ("Item ID", 10),
+        ("Difficulty", 10),
+        (f"{run1_label} Tokens", 15),
+        (f"{run2_label} Tokens", 15),
+        ("Token Delta", 15),
+        (f"{run1_label} Reward", 12),
+        (f"{run2_label} Reward", 12),
+        (f"{run1_label} LLM", 10),
+        (f"{run2_label} LLM", 10)
+    ]
+    
+    # Print header row with proper spacing
+    header_row = ""
+    for header, width in detailed_headers:
+        header_row += f"{header:<{width}} | "
+    print(header_row.rstrip(" | "))
+    
+    # Print separator line
+    separator = ""
+    for _, width in detailed_headers:
+        separator += "-" * width + "-+-"
+    print(separator.rstrip("-+-"))
+    
+    # Print detailed item analysis for each category
+    for category, items in detailed_item_analysis.items():
+        if items:
+            for i, item in enumerate(items):
+                row_data = [
+                    category if i == 0 else "",
+                    item['item_id'],
+                    item['difficulty'],
+                    f"{item['run1_new_tokens']:,}",
+                    f"{item['run2_new_tokens']:,}",
+                    f"{item['token_delta']:+,}",
+                    f"{item['run1_reward']:.1f}",
+                    f"{item['run2_reward']:.1f}",
+                    str(item['run1_llm_responses']),
+                    str(item['run2_llm_responses'])
+                ]
+                
+                data_row = ""
+                for j, (data, (_, width)) in enumerate(zip(row_data, detailed_headers)):
+                    if j < 3:
+                        data_row += f"{data:<{width}} | "
+                    else:
+                        data_row += f"{data:>{width}} | "
+                print(data_row.rstrip(" | "))
+            print(separator.rstrip("-+-"))
+        else:
+            row_data = [category, "-", "-", "-", "-", "-", "-", "-", "-", "-"]
+            data_row = ""
+            for j, (data, (_, width)) in enumerate(zip(row_data, detailed_headers)):
+                if j < 3:
+                    data_row += f"{data:<{width}} | "
+                else:
+                    data_row += f"{data:>{width}} | "
+            print(data_row.rstrip(" | "))
+            print(separator.rstrip("-+-"))
+    
+    print("=" * 180)
 
 async def main():
     """
     Main function to parse arguments, connect to database, and run analysis.
     """
     parser = argparse.ArgumentParser(description='Compare metrics between two run IDs')
-    parser.add_argument('run_id1', help='First run ID for comparison')
-    parser.add_argument('run_id2', help='Second run ID for comparison')
+    parser.add_argument('run_id1', help='First run ID for comparison (React run)')
+    parser.add_argument('run_id2', help='Second run ID for comparison (Folding run)')
     parser.add_argument('--format', choices=['csv', 'json', 'both'], default='both',
                         help='Output format (default: both)')
     parser.add_argument('--data_path', default='data/bc_test.parquet',
@@ -509,7 +1246,6 @@ async def main():
         print(f"Analyzing run {args.run_id2}...")
         metrics2 = await analyze_run(db, args.run_id2, difficulty_map)
         
-        # Generate output
         await generate_output(metrics1, metrics2, args.run_id1, args.run_id2, args.format, difficulty_map)
         
     except ValueError as e:

@@ -1,3 +1,17 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-pvc
+  namespace: liuyunxin
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi  # Increased to 5Gi to account for long-term SGLang dashboard history
+  storageClassName: rancher-local-path
+  volumeMode: Filesystem
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -28,10 +42,41 @@ spec:
             cpu: "500m"
         volumeMounts:
         - name: grafana-storage
-          mountPath: /var/lib/grafana
+          mountPath: /var/lib/grafana  # Grafana's internal DB location
+        env:
+        - name: GF_RENDERING_SERVER_URL
+          value: http://grafana-renderer.liuyunxin:8081/render
+        - name: GF_RENDERING_CALLBACK_URL
+          value: http://grafana.liuyunxin:3000
+        - name: GF_ANALYTICS_REPORTING_ENABLED
+          value: "false"
+        - name: GF_RENDERING_AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: grafana-renderer-secret
+              key: auth-token
+        - name: NO_PROXY
+          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+        - name: no_proxy
+          value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+        - name: http_proxy
+          value: "http://192.168.3.226:7890"
+        - name: https_proxy
+          value: "http://192.168.3.226:7890"
+        - name: HTTP_PROXY
+          value: "http://192.168.3.226:7890"
+        - name: HTTPS_PROXY
+          value: "http://192.168.3.226:7890"
+        - name: APT_PROXY
+          value: "http://192.168.3.241:3142"
+        - name: PIP_INDEX_URL
+          value: "http://192.168.12.70:9181/repository/pypi-proxy/simple/"
+        - name: PIP_TRUSTED_HOST
+          value: "192.168.12.70"
       volumes:
       - name: grafana-storage
-        emptyDir: {}
+        persistentVolumeClaim:
+          claimName: grafana-pvc
 ---
 apiVersion: v1
 kind: Service

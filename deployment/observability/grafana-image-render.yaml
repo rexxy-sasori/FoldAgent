@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana-renderer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana-renderer
+  template:
+    metadata:
+      labels:
+        app: grafana-renderer
+    spec:
+      containers:
+        - name: renderer
+          image: harbor.xa.xshixun.com:7443/hanfeigeng/grafana/grafana-image-renderer:latest
+          ports:
+            - containerPort: 8081
+          # --- ADD THIS SECTION ---
+          env:
+          - name: GF_RENDERING_AUTH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: grafana-renderer-secret
+                key: auth-token
+          - name: IGNORE_HTTPS_ERRORS  # CRITICAL: Your callback is likely internal/self-signed
+            value: "true"
+          - name: NO_PROXY
+            value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+          - name: no_proxy
+            value: "127.0.0.1,localhost,.svc.cluster.local,10.0.0.0/8,192.168.0.0/16,.liuyunxin"
+          - name: http_proxy
+            value: "http://192.168.3.226:7890"
+          - name: https_proxy
+            value: "http://192.168.3.226:7890"
+          - name: HTTP_PROXY
+            value: "http://192.168.3.226:7890"
+          - name: HTTPS_PROXY
+            value: "http://192.168.3.226:7890"
+          - name: APT_PROXY
+            value: "http://192.168.3.241:3142"
+          - name: PIP_INDEX_URL
+            value: "http://192.168.12.70:9181/repository/pypi-proxy/simple/"
+          - name: PIP_TRUSTED_HOST
+            value: "192.168.12.70"
+          - name: RENDERING_ARGS
+            value: "--no-sandbox,--disable-setuid-sandbox,--disable-gpu"
+          - name: RENDERING_MODE
+            value: "clustered"
+          - name: BROWSER_BIN
+            value: "/usr/bin/chromium"
+          resources:
+            limits:
+              cpu: "1000m"      # 1 full core for bursty rendering
+              memory: "1Gi"     # Chromium needs breathing room
+            requests:
+              cpu: "100m"       # Low baseline when idle
+              memory: "256Mi"   # Minimum to keep the engine warm
+          # -------------------------
+          # Optional: Use an emptyDir for Chromium's temp files
+          volumeMounts:
+            - name: tmp-volume
+              mountPath: /tmp
+      volumes:
+        - name: tmp-volume
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana-renderer
+spec:
+  selector:
+    app: grafana-renderer
+  ports:
+    - port: 8081
+      targetPort: 8081

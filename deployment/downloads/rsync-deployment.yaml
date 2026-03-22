@@ -8,6 +8,8 @@ data:
     # Rsync daemon configuration
     max connections = 10
     log file = /var/log/rsyncd.log
+    use chroot = no
+    numeric ids = yes
     
     # Module for /root (general storage)
     [root]
@@ -20,6 +22,8 @@ data:
     gid = root
     auth users = root
     secrets file = /etc/rsyncd.secrets
+    use chroot = no
+    ignore errors = yes
     
     # Module for /app (WebShop root)
     [app]
@@ -32,6 +36,8 @@ data:
     gid = root
     auth users = root
     secrets file = /etc/rsyncd.secrets
+    use chroot = no
+    ignore errors = yes
   rsyncd.secrets: |
     root:swe_bench_sync
 ---

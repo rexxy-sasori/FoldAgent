@@ -73,6 +73,8 @@ def parse_args():
                         help='URL of the local search server (default: http://localhost:8000)')
     parser.add_argument('--enable_summary', action='store_true',
                         help='Enable summary mode (use with workflow=search for Summary agent)')
+    parser.add_argument('--track_log_prob', action='store_true',
+                        help='Enable tracking of log probabilities in API calls')
     parser.add_argument('--difficulty', choices=['easy', 'medium', 'hard'], default=None,
                         help='Filter items by difficulty level (default: None, run all items)')
     return parser.parse_args()
@@ -155,7 +157,8 @@ async def worker(worker_id, rows, args, pbar, shared_scores, run_id):
                 'must_finish': False,
                 'double_check': False,
                 'must_search': False,
-                'enable_summary': args.enable_summary
+                'enable_summary': args.enable_summary,
+                'track_log_prob': args.track_log_prob
             }
         }}
     })

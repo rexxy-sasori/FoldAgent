@@ -204,7 +204,7 @@ class CallLLM:  # Call policy LLM in RL env
             "max_length": max_len,
             "meta_info": self.meta_info | {'uid': uid},
             "logprobs": track_log_prob,
-            "top_logprobs": 1 if track_log_prob else 0,
+            **({"top_logprobs": 1} if track_log_prob else {}),
         }
 
         import asyncio
@@ -534,7 +534,7 @@ class CallAPI:  # Call external API
                     extra_body=extra_body if extra_body else None,
                     extra_headers={"X-Request-ID": request_id},
                     logprobs=track_log_prob,
-                    top_logprobs=1 if track_log_prob else 0,
+                    **({"top_logprobs": 1} if track_log_prob else {}),
                 )
                 # End timing and calculate duration
                 end_time = time.time()
